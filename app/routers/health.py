@@ -35,11 +35,18 @@ def health() -> dict:
         report["status"] = "error"
 
     # Embeddings provider
-    if settings.embed_provider == "gemini":
-        report["checks"]["embed_provider"] = "gemini"
+    report["checks"]["embed_provider"] = settings.embed_provider
+    if settings.embed_provider == "fastembed":
+        # In-process model — verify it loads (and is baked/cached).
+        try:
+            from app.services.embeddings import embed_query
+            report["checks"]["embed_model"] = (
+                "ok" if len(embed_query("ping")) == settings.embed_dim else "bad dim")
+        except Exception as e:  # noqa: BLE001
+            report["checks"]["embed_model"] = f"error: {e}"
+            report["status"] = "error"
+    elif settings.embed_provider == "gemini":
         report["checks"]["google_key"] = "set" if settings.google_api_key.strip() else "MISSING"
-    else:
-        report["checks"]["embed_provider"] = "ollama"
 
     # Chat provider
     if settings.chat_provider == "groq":

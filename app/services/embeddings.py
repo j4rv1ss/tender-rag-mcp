@@ -54,9 +54,12 @@ def _gemini_client() -> httpx.Client:
 
 def embed_texts(texts: list[str],
                 task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
-    """Embed texts in batches, preserving order. task_type applies to Gemini only."""
+    """Embed texts, preserving order. task_type ('query' vs document) matters for
+    fastembed (bge query prefix) and Gemini; Ollama ignores it."""
     if not texts:
         return []
+    if settings.embed_provider == "fastembed":
+        return _embed_fastembed(texts, task_type)
     if settings.embed_provider == "gemini":
         return _embed_gemini(texts, task_type)
     return _embed_ollama(texts)
@@ -64,6 +67,38 @@ def embed_texts(texts: list[str],
 
 def embed_query(text: str) -> list[float]:
     return embed_texts([text], task_type="RETRIEVAL_QUERY")[0]
+
+
+# --- fastembed (in-process ONNX, free, offline) -----------------------------
+
+_FASTEMBED = None   # loaded lazily on first use (model load costs ~1-20s)
+
+
+def _fastembed_model():
+    global _FASTEMBED
+    if _FASTEMBED is None:
+        try:
+            from fastembed import TextEmbedding
+        except ImportError as e:  # pragma: no cover
+            raise EmbeddingError(
+                "fastembed is not installed — `pip install fastembed`") from e
+        _FASTEMBED = TextEmbedding(model_name=settings.fastembed_model,
+                                   cache_dir=settings.fastembed_cache or None)
+    return _FASTEMBED
+
+
+def _embed_fastembed(texts: list[str], task_type: str) -> list[list[float]]:
+    model = _fastembed_model()
+    try:
+        # bge retrieval is asymmetric: queries get a search prefix (query_embed),
+        # passages are embedded as-is (embed).
+        clean = [(t or " ")[:_MAX_CHARS] for t in texts]
+        gen = model.query_embed(clean) if task_type == "RETRIEVAL_QUERY" \
+            else model.embed(clean)
+        return [v.tolist() for v in gen]
+    except Exception as e:  # noqa: BLE001
+        raise EmbeddingError(
+            f"fastembed failed ({settings.fastembed_model}): {e}") from e
 
 
 # --- Gemini (cloud) ---------------------------------------------------------

@@ -38,23 +38,33 @@ def _statements(sql: str) -> list[str]:
     return [s.strip() for s in no_comments.split(";") if s.strip()]
 
 
+def reset_schema() -> None:
+    """Drop the app tables so init can recreate them (needed when the embedding
+    dimension changes, e.g. switching providers)."""
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS chunks, documents, tenders CASCADE"))
+    print("dropped existing tables")
+
+
 def init_schema() -> None:
     path = Path(__file__).resolve().parent.parent / "db" / "init.sql"
+    sql = path.read_text(encoding="utf-8")
+    # The VECTOR(n) column must match the active provider's embed_dim.
+    sql = re.sub(r"VECTOR\(\d+\)", f"VECTOR({settings.embed_dim})", sql)
     with engine.begin() as conn:
-        for stmt in _statements(path.read_text(encoding="utf-8")):
+        for stmt in _statements(sql):
             conn.execute(text(stmt))
-    print("schema ready (tables + pgvector extension)")
+    print(f"schema ready (tables + pgvector, embedding VECTOR({settings.embed_dim}))")
 
 
 def main() -> None:
     print(f"DB    : {settings.database_url_safe}")
     print(f"Embed : {settings.embed_provider} ({settings.active_embed_model}, "
           f"{settings.embed_dim}-dim)")
-    if settings.embed_provider == "ollama":
-        print("NOTE  : GOOGLE_API_KEY not set — embedding with local Ollama. For a "
-              "cloud deploy, set GOOGLE_API_KEY so chunks are embedded with Gemini.")
 
-    if "--init" in sys.argv:
+    if "--reset" in sys.argv:
+        reset_schema()
+    if "--init" in sys.argv or "--reset" in sys.argv:
         init_schema()
 
     db = SessionLocal()

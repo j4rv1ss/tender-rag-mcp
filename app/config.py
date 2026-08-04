@@ -23,18 +23,25 @@ class Settings(BaseSettings):
     # Cloud Postgres (Neon/Supabase) requires SSL — set to "require" there.
     postgres_sslmode: str = ""
 
+    # Which embedding backend to use: "fastembed" | "ollama" | "gemini".
+    #   fastembed — in-process ONNX model (bge-small, 384-dim). Free, no API, no
+    #               quotas; the default for cloud/free hosts.
+    #   ollama    — local nomic-embed-text (768-dim); the local-dev default.
+    #   gemini    — Google's cloud API (768-dim) — kept as an option (has a hard
+    #               free-tier daily cap, so not used for bulk corpora).
+    # The provider fixes embed_dim (below), which must match the VECTOR(n) column.
+    embed_provider: str = "ollama"
+
+    # fastembed (in-process, free, offline) — bge-small-en-v1.5 is 384-dim.
+    fastembed_model: str = "BAAI/bge-small-en-v1.5"
+    fastembed_cache: str = ""      # model cache dir (Docker bakes the model here)
+
     # Ollama (local, free) — embeddings + chat fallback when no cloud keys are set
     ollama_url: str = "http://localhost:11434"
     chat_model: str = "llama3.2:3b"
     embed_model: str = "nomic-embed-text"
-    embed_dim: int = 768
 
-    # Google Gemini (cloud, free tier) — embeddings. If a key is set, embeddings use
-    # Gemini instead of local Ollama (needed on free hosts that can't run Ollama).
-    # gemini-embedding-001 is the current model; it natively emits 3072 dims but
-    # supports Matryoshka truncation, so we request outputDimensionality = embed_dim
-    # (768) to match the VECTOR(768) schema — no migration. Cosine search is
-    # scale-invariant, so the truncated vectors need no manual normalisation.
+    # Google Gemini (cloud) — embeddings (768-dim, Matryoshka-truncated). Optional.
     google_api_key: str = ""
     gemini_embed_model: str = "gemini-embedding-001"
     gemini_url: str = "https://generativelanguage.googleapis.com/v1beta"
@@ -63,13 +70,15 @@ class Settings(BaseSettings):
         return self.groq_model if self.chat_provider == "groq" else self.chat_model
 
     @property
-    def embed_provider(self) -> str:
-        return "gemini" if self.google_api_key.strip() else "ollama"
+    def embed_dim(self) -> int:
+        # Must match the chunks.embedding VECTOR(n) column for the active provider.
+        return 384 if self.embed_provider == "fastembed" else 768
 
     @property
     def active_embed_model(self) -> str:
-        return (self.gemini_embed_model if self.embed_provider == "gemini"
-                else self.embed_model)
+        return {"fastembed": self.fastembed_model,
+                "gemini": self.gemini_embed_model}.get(self.embed_provider,
+                                                       self.embed_model)
 
     # On-demand scraping shells out to local scraper subprocesses that need
     # Playwright/Tesseract/LibreOffice + system Python 3.14. Cloud/free hosts don't
