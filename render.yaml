@@ -1,0 +1,39 @@
+# Render Blueprint — deploy the Tender RAG app as a FREE Docker web service.
+# Secrets (DB password, API keys) are entered in the Render dashboard (sync: false);
+# non-secret values are set here. See DEPLOY.md for the full walkthrough.
+services:
+  - type: web
+    name: tender-rag
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      # --- Neon Postgres (secrets: fill in the dashboard) ---
+      - key: POSTGRES_HOST        # <your-project>.neon.tech
+        sync: false
+      - key: POSTGRES_DB
+        sync: false
+      - key: POSTGRES_USER
+        sync: false
+      - key: POSTGRES_PASSWORD
+        sync: false
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_SSLMODE
+        value: require
+      # --- AI providers (secrets: fill in the dashboard) ---
+      - key: GOOGLE_API_KEY       # Gemini embeddings — aistudio.google.com/apikey
+        sync: false
+      - key: GROQ_API_KEY         # Groq chat — console.groq.com
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GEMINI_EMBED_MODEL
+        value: gemini-embedding-001
+      # --- cloud is query-only (no local scrapers) ---
+      - key: ENABLE_SCRAPING
+        value: "false"
+      - key: TOP_K
+        value: "4"

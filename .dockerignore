@@ -1,0 +1,20 @@
+# Keep the image small and secrets out of it.
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.gitignore
+
+# secrets — never bake into the image (set them as env vars on the host)
+.env
+.env.*
+!.env.example
+
+# not needed at runtime
+scripts/
+docs/
+*.md
+Dockerfile
+.dockerignore
+render.yaml

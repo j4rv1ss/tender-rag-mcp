@@ -1,0 +1,90 @@
+"""GET /health — DB + pgvector, and whichever AI providers are actually in use."""
+from __future__ import annotations
+
+import httpx
+from fastapi import APIRouter
+from sqlalchemy import text
+
+from app.config import settings
+from app.db import engine
+
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health")
+def health() -> dict:
+    report: dict = {"status": "ok", "checks": {}}
+
+    def degrade() -> None:
+        if report["status"] != "error":
+            report["status"] = "degraded"
+
+    # PostgreSQL + pgvector
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            has_vec = conn.execute(text(
+                "SELECT count(*) FROM pg_extension WHERE extname = 'vector'"
+            )).scalar()
+        report["checks"]["postgres"] = "ok"
+        report["checks"]["pgvector"] = "ok" if has_vec else "extension not created"
+        if not has_vec:
+            report["status"] = "degraded"
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["postgres"] = f"error: {e}"
+        report["status"] = "error"
+
+    # Embeddings provider
+    if settings.embed_provider == "gemini":
+        report["checks"]["embed_provider"] = "gemini"
+        report["checks"]["google_key"] = "set" if settings.google_api_key.strip() else "MISSING"
+    else:
+        report["checks"]["embed_provider"] = "ollama"
+
+    # Chat provider
+    if settings.chat_provider == "groq":
+        report["checks"]["chat_provider"] = "groq"
+        report["checks"]["groq_key"] = "set" if settings.groq_api_key.strip() else "MISSING"
+    else:
+        report["checks"]["chat_provider"] = "ollama"
+
+    # Ollama — only relevant when it actually serves embeddings or chat.
+    needs_ollama = settings.embed_provider == "ollama" or settings.chat_provider == "ollama"
+    if needs_ollama:
+        try:
+            with httpx.Client(base_url=settings.ollama_url, timeout=5.0) as c:
+                tags = c.get("/api/tags").json()
+            names = {m.get("name", "").split(":")[0] for m in tags.get("models", [])}
+            full = {m.get("name") for m in tags.get("models", [])}
+            report["checks"]["ollama"] = "ok"
+
+            def model_ok(name: str) -> bool:
+                return name in full or name.split(":")[0] in names
+
+            if settings.embed_provider == "ollama":
+                report["checks"]["embed_model"] = (
+                    "ok" if model_ok(settings.embed_model)
+                    else f"missing — run: ollama pull {settings.embed_model}")
+                if not model_ok(settings.embed_model):
+                    degrade()
+            if settings.chat_provider == "ollama":
+                report["checks"]["chat_model"] = (
+                    "ok" if model_ok(settings.chat_model)
+                    else f"missing — run: ollama pull {settings.chat_model}")
+                if not model_ok(settings.chat_model):
+                    degrade()
+        except Exception as e:  # noqa: BLE001
+            report["checks"]["ollama"] = f"error: {e}"
+            report["status"] = "error"
+
+    report["config"] = {
+        "database": settings.database_url_safe,
+        "embed_provider": settings.embed_provider,
+        "embed_model": settings.active_embed_model,
+        "embed_dim": settings.embed_dim,
+        "chat_provider": settings.chat_provider,
+        "chat_model": settings.active_chat_model,
+        "scraping": settings.enable_scraping,
+        "top_k": settings.top_k,
+    }
+    return report

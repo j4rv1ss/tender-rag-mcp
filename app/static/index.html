@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tender RAG — Chat</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 820px; margin: 24px auto;
+         padding: 0 16px; line-height: 1.45; }
+  h1 { font-size: 1.3rem; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input, button, select { font: inherit; padding: 8px 10px; border-radius: 8px;
+         border: 1px solid #8888; }
+  #question { flex: 1 1 320px; }
+  #log { margin-top: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { padding: 10px 12px; border-radius: 10px; border: 1px solid #8884; }
+  .q { background: #4f8cff22; }
+  .a { background: #22c55e18; white-space: pre-wrap; }
+  .refs { font-size: .85rem; opacity: .8; margin-top: 6px; }
+  .muted { opacity: .65; font-size: .9rem; }
+  button.primary { background: #4f8cff; color: #fff; border-color: #4f8cff;
+         cursor: pointer; }
+  button:disabled { opacity: .5; cursor: progress; }
+</style>
+</head>
+<body>
+  <h1>Tender RAG — ask about a tender</h1>
+  <p class="muted">Answers come from the tender's metadata + its documents
+    (local Ollama, offline). Swagger at <a href="/docs">/docs</a>.</p>
+
+  <div class="row">
+    <label>Source <input id="source" value="etenders" size="10"></label>
+    <label>Tender ID <input id="tender" value="162660" size="10"></label>
+    <button id="ingestBtn">Ingest</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <input id="question" placeholder="e.g. What documents are mandatory for this tender?"
+           value="What documents are mandatory for this tender?">
+    <button id="askBtn" class="primary">Ask</button>
+  </div>
+  <div id="log"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log");
+
+function add(cls, html) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.innerHTML = html;
+  log.prepend(d);
+  return d;
+}
+const esc = (s) => (s ?? "").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function ask() {
+  const question = $("question").value.trim();
+  if (!question) return;
+  $("askBtn").disabled = true;
+  add("q", "<b>Q:</b> " + esc(question));
+  const pending = add("a", "<span class='muted'>thinking… (local model, may take a while)</span>");
+  try {
+    const r = await fetch("/chat", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source: $("source").value.trim(),
+                            tender_id: $("tender").value.trim(), question})
+    });
+    const data = await r.json();
+    if (!r.ok) { pending.innerHTML = "<b>Error:</b> " + esc(data.detail || r.status); return; }
+    let refs = "";
+    if (data.references?.length) {
+      refs = "<div class='refs'>Sources: " + data.references.map(x =>
+        esc(x.document || "doc") + (x.page ? " p." + x.page : "") +
+        " (" + x.score + ")").join(" · ") + "</div>";
+    }
+    pending.innerHTML = "<b>A:</b> " + esc(data.answer) + refs;
+  } catch (e) {
+    pending.innerHTML = "<b>Error:</b> " + esc(String(e));
+  } finally { $("askBtn").disabled = false; }
+}
+
+async function ingest() {
+  $("ingestBtn").disabled = true;
+  const note = add("a", "<span class='muted'>ingesting…</span>");
+  try {
+    const r = await fetch("/ingest", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source: $("source").value.trim(),
+                            tender_id: $("tender").value.trim()})
+    });
+    const data = await r.json();
+    note.innerHTML = r.ok
+      ? `Ingested ${esc(data.tender_id)}: ${data.documents} docs, ${data.chunks} chunks embedded.`
+      : "<b>Ingest error:</b> " + esc(data.detail || r.status);
+  } catch (e) { note.innerHTML = "<b>Error:</b> " + esc(String(e)); }
+  finally { $("ingestBtn").disabled = false; }
+}
+
+$("askBtn").onclick = ask;
+$("ingestBtn").onclick = ingest;
+$("question").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
+</script>
+</body>
+</html>
