@@ -26,6 +26,10 @@ services:
       # --- embeddings: in-process fastembed (no key, no quota) ---
       - key: EMBED_PROVIDER
         value: fastembed
+      # reranker off on the free tier (RAM); hybrid search still runs. Flip to
+      # "true" if you move to a larger instance.
+      - key: USE_RERANKER
+        value: "false"
       # --- chat: Groq (secret: fill in the dashboard) ---
       - key: GROQ_API_KEY         # console.groq.com
         sync: false

@@ -53,8 +53,10 @@ def _startup() -> None:
     try:
         from app.services.embeddings import embed_query
         embed_query("warmup")
+        from app.services import reranker
+        reranker.warmup()                                 # load reranker model (if on)
         from app.services import llm
         llm.chat("You are a warmup.", "Reply with OK.")   # prime the LLM connection
-        log.info("embedding + chat connections warmed up")
+        log.info("embedding + reranker + chat warmed up")
     except Exception as e:  # noqa: BLE001 - non-fatal
         log.warning("warmup skipped: %s", e)

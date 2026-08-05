@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # search catches exact tokens (tender numbers, form codes) that vectors miss.
     hybrid_search: bool = True
     retrieve_candidates: int = 40   # per-ranker pool pulled before fusing to top_k
+    # Cross-encoder reranker (in-process, fastembed): re-scores the fused candidates
+    # so the most relevant chunks reach the LLM. ON by default (local); the free
+    # cloud sets USE_RERANKER=false to stay within its small RAM.
+    use_reranker: bool = True
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    rerank_candidates: int = 24     # fused hits pulled, then reranked down to top_k
 
     @property
     def chat_provider(self) -> str:

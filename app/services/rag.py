@@ -11,9 +11,20 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Tender
 from app.schemas import ChatResponse, Reference
-from app.services import llm, prompts
+from app.services import llm, prompts, reranker
 from app.services.embeddings import embed_query
 from app.services.retriever import RetrievedChunk, retriever
+
+
+def _retrieve(db: Session, question: str, k: int,
+              tender_pk: int | None) -> list[RetrievedChunk]:
+    """Hybrid retrieval, then (optionally) cross-encoder rerank down to k."""
+    qvec = embed_query(question)
+    if settings.use_reranker:
+        pool = retriever.retrieve(db, qvec, question,
+                                  settings.rerank_candidates, tender_pk)
+        return reranker.rerank(question, pool, k)
+    return retriever.retrieve(db, qvec, question, k, tender_pk)
 
 
 def _references(chunks: list[RetrievedChunk], cross: bool) -> list[Reference]:
@@ -30,8 +41,7 @@ def answer_question(db: Session, tender: Tender, question: str,
                     top_k: int | None = None) -> ChatResponse:
     """Per-tender: answer from one tender's metadata + documents."""
     k = top_k or settings.top_k
-    chunks = retriever.retrieve(db, embed_query(question), question, k,
-                                tender_pk=tender.id)
+    chunks = _retrieve(db, question, k, tender_pk=tender.id)
     if not chunks:
         return ChatResponse(
             mode="tender", tender_id=tender.tender_id, question=question,
@@ -50,8 +60,7 @@ def answer_across_corpus(db: Session, question: str,
                          top_k: int | None = None) -> ChatResponse:
     """Cross-corpus: search every tender, attribute the answer to tenders."""
     k = top_k or settings.top_k
-    chunks = retriever.retrieve(db, embed_query(question), question, k,
-                                tender_pk=None)
+    chunks = _retrieve(db, question, k, tender_pk=None)
     if not chunks:
         return ChatResponse(
             mode="corpus", tender_id=None, question=question,
