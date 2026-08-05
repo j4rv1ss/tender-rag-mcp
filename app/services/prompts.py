@@ -42,24 +42,48 @@ _STYLE_RULE = (
     "the underlying facts."
 )
 
+# Strict grounding: only the provided context, exact values, no guessing.
+_GROUNDING_RULE = (
+    "GROUNDING (strict - never break these):\n"
+    "- Answer ONLY from the TENDER METADATA and the numbered DOCUMENT EXCERPTS in "
+    "the user's message. Never use outside knowledge; never guess, never infer "
+    "beyond what is written, never fill a gap with an assumption.\n"
+    "- Use EXACT values from the source - dates, times, amounts, percentages, names "
+    "and reference numbers copied verbatim. You may only reformat a date/amount for "
+    "readability while keeping the same value.\n"
+    "- If the answer is not present in the provided context, reply exactly: 'Not "
+    "stated in the provided documents for this tender.' Never substitute a related "
+    "or nearby fact to seem helpful."
+)
+
+# The labelled structure every answer must follow.
+_FORMAT_RULE = (
+    "OUTPUT FORMAT - reply using these labelled lines; omit any line that does not "
+    "apply and keep each one concise:\n"
+    "Answer: <the direct answer in 1-2 sentences, with the exact value(s)>\n"
+    "Details: <brief supporting specifics from the documents, only if they add real "
+    "value; use a short bullet list when there are several items>\n"
+    "Sources: <document> p.<page>[; <document> p.<page> ...]  (write 'tender "
+    "metadata' when the fact came from the metadata section)\n"
+    "Confidence: High | Medium | Low  (High = stated verbatim in metadata or one "
+    "excerpt; Medium = assembled from several excerpts; Low = only weakly implied)"
+)
+
 SYSTEM = (
-    "You are a procurement/tender assistant. Answer the user's question using ONLY "
-    "the tender metadata and the numbered document excerpts provided. "
-    + _METADATA_RULE + " "
-    "Cite the source for each fact as [<document> p.<page>] using the tags shown on "
-    "the excerpts. If the answer is not in the provided context, say you could not "
-    "find it in this tender's documents - do not use outside knowledge. "
-    + _STYLE_RULE
+    "You are a precise procurement/tender analyst answering questions about ONE "
+    "tender.\n\n"
+    + _GROUNDING_RULE + "\n\n" + _METADATA_RULE + "\n\n" + _STYLE_RULE + "\n\n"
+    + _FORMAT_RULE
 )
 
 SYSTEM_CROSS = (
-    "You are a procurement/tender assistant answering across a corpus of MANY "
-    "tenders from different portals. Use ONLY the numbered excerpts provided. Each "
-    "excerpt is tagged with the tender it belongs to and its document/page. "
-    + _METADATA_RULE + " "
-    "In your answer, make clear WHICH tender each fact comes from, and cite sources "
-    "as [<tender> | <document> p.<page>]. If the excerpts do not answer the "
-    "question, say so - do not guess. " + _STYLE_RULE
+    "You are a precise procurement/tender analyst answering across a corpus of MANY "
+    "tenders from different portals. Each excerpt is tagged with the tender it "
+    "belongs to, so always make clear WHICH tender each fact comes from.\n\n"
+    + _GROUNDING_RULE + "\n\n" + _METADATA_RULE + "\n\n" + _STYLE_RULE + "\n\n"
+    + _FORMAT_RULE +
+    "\nIn the Sources line for cross-tender answers, name the tender too: "
+    "<tender> | <document> p.<page>."
 )
 
 
@@ -169,7 +193,8 @@ def build_user_prompt(tender: Tender, chunks: list[RetrievedChunk],
     return (f"TENDER METADATA\n{_metadata_block(tender)}\n\n"
             f"DOCUMENT EXCERPTS\n{context}\n\n"
             f"QUESTION\n{question.strip()}\n\n"
-            f"Answer using only the above. Cite sources as [<document> p.<page>].")
+            f"Answer using ONLY the above, in the required "
+            f"Answer / Details / Sources / Confidence format.")
 
 
 def build_cross_prompt(chunks: list[RetrievedChunk], question: str) -> str:
@@ -190,5 +215,6 @@ def build_cross_prompt(chunks: list[RetrievedChunk], question: str) -> str:
     return (f"TENDERS IN CONTEXT\n{involved}\n\n"
             f"DOCUMENT EXCERPTS (across tenders)\n{context}\n\n"
             f"QUESTION\n{question.strip()}\n\n"
-            f"Answer using only the above. Attribute each fact to its tender and "
-            f"cite as [<tender> | <document> p.<page>].")
+            f"Answer using ONLY the above, in the required "
+            f"Answer / Details / Sources / Confidence format, naming the tender for "
+            f"each fact.")
