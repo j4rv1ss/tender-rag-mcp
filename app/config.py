@@ -59,7 +59,11 @@ class Settings(BaseSettings):
     # RAG params
     chunk_tokens: int = 500
     chunk_overlap: int = 80
-    top_k: int = 8      # fetch enough chunks to cover large docs (100+ pages)
+    top_k: int = 8      # chunks sent to the LLM (after fusion)
+    # Hybrid retrieval: fuse keyword (full-text) + vector rankings via RRF. Keyword
+    # search catches exact tokens (tender numbers, form codes) that vectors miss.
+    hybrid_search: bool = True
+    retrieve_candidates: int = 40   # per-ranker pool pulled before fusing to top_k
 
     @property
     def chat_provider(self) -> str:

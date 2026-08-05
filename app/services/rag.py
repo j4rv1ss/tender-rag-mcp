@@ -30,7 +30,8 @@ def answer_question(db: Session, tender: Tender, question: str,
                     top_k: int | None = None) -> ChatResponse:
     """Per-tender: answer from one tender's metadata + documents."""
     k = top_k or settings.top_k
-    chunks = retriever.search(db, embed_query(question), k, tender_pk=tender.id)
+    chunks = retriever.retrieve(db, embed_query(question), question, k,
+                                tender_pk=tender.id)
     if not chunks:
         return ChatResponse(
             mode="tender", tender_id=tender.tender_id, question=question,
@@ -49,7 +50,8 @@ def answer_across_corpus(db: Session, question: str,
                          top_k: int | None = None) -> ChatResponse:
     """Cross-corpus: search every tender, attribute the answer to tenders."""
     k = top_k or settings.top_k
-    chunks = retriever.search(db, embed_query(question), k, tender_pk=None)
+    chunks = retriever.retrieve(db, embed_query(question), question, k,
+                                tender_pk=None)
     if not chunks:
         return ChatResponse(
             mode="corpus", tender_id=None, question=question,

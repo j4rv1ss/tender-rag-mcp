@@ -50,8 +50,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_number INTEGER     NOT NULL,
     chunk_text   TEXT        NOT NULL,
     page_number  INTEGER,
-    embedding    VECTOR(768),                              -- nomic-embed-text
+    embedding    VECTOR(768),                              -- set by the embed model
     metadata     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    -- full-text vector for keyword (hybrid) search; auto-computed from chunk_text
+    tsv          TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', chunk_text)) STORED,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- filter-by-tender then vector search
@@ -59,3 +61,5 @@ CREATE INDEX IF NOT EXISTS chunks_tender_pk_idx ON chunks(tender_pk);
 -- approximate nearest neighbour, cosine distance
 CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw_idx
     ON chunks USING hnsw (embedding vector_cosine_ops);
+-- keyword search (hybrid retrieval)
+CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING gin (tsv);

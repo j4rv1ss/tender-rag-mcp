@@ -100,8 +100,9 @@ def _chat_groq(system: str, user: str, temperature: float, model: str) -> str:
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
-        "temperature": temperature,
-        "max_tokens": 800,
+        "temperature": temperature,   # 0 = deterministic, best for factual QA
+        "top_p": 1.0,                 # greedy at temp 0; explicit for clarity
+        "max_tokens": 600,            # plenty for the structured answer; saves budget
     }
     delay = 0.0
     for attempt in range(3):
