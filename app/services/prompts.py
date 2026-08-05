@@ -24,8 +24,22 @@ _METADATA_RULE = (
     "briefing session.\n"
     "- Contact = contact person, who to contact, contact email/phone.\n"
     "These are SEPARATE fields: give the one the user means and never swap one for "
-    "another. If the matching field is not present in the metadata, say it is not "
-    "available for this tender - do not substitute a different field or guess."
+    "another. Also handle opposite or negated questions: if the user asks whether "
+    "something is allowed, permitted, or required and the documents say it is NOT "
+    "(or the reverse), reply with a clear Yes or No that matches the documents. If "
+    "the matching field is not present in the metadata, say it is not available for "
+    "this tender - do not substitute a different field or guess."
+)
+
+# How answers should be written: friendly formatting, real sentences, no raw dumps.
+_STYLE_RULE = (
+    "Write the answer as clear, complete sentences - never just paste a raw field "
+    "value. Reformat dates and times into a readable form: render '28/08/2026 "
+    "10:00:00' as '28 August 2026 at 10:00' (slash dates are day/month/year; drop "
+    "the seconds). Show money with its currency (e.g. 'ZMW 1,000'). Use a short "
+    "bulleted list only when the answer is naturally several items (e.g. required "
+    "documents); otherwise reply in prose. Format the wording only - never change "
+    "the underlying facts."
 )
 
 SYSTEM = (
@@ -34,8 +48,8 @@ SYSTEM = (
     + _METADATA_RULE + " "
     "Cite the source for each fact as [<document> p.<page>] using the tags shown on "
     "the excerpts. If the answer is not in the provided context, say you could not "
-    "find it in this tender's documents - do not use outside knowledge. Be concise "
-    "and specific; prefer lists for requirements, dates, or required documents."
+    "find it in this tender's documents - do not use outside knowledge. "
+    + _STYLE_RULE
 )
 
 SYSTEM_CROSS = (
@@ -45,7 +59,7 @@ SYSTEM_CROSS = (
     + _METADATA_RULE + " "
     "In your answer, make clear WHICH tender each fact comes from, and cite sources "
     "as [<tender> | <document> p.<page>]. If the excerpts do not answer the "
-    "question, say so - do not guess. Be concise; use lists when comparing tenders."
+    "question, say so - do not guess. " + _STYLE_RULE
 )
 
 

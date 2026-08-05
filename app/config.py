@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     # RAG params
     chunk_tokens: int = 500
     chunk_overlap: int = 80
-    top_k: int = 4
+    top_k: int = 8      # fetch enough chunks to cover large docs (100+ pages)
 
     @property
     def chat_provider(self) -> str:

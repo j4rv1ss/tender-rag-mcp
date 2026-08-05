@@ -35,4 +35,4 @@ services:
       - key: ENABLE_SCRAPING
         value: "false"
       - key: TOP_K
-        value: "4"
+        value: "8"
