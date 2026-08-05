@@ -45,27 +45,23 @@ def _groq_client() -> httpx.Client:
 def chat(system: str, user: str, temperature: float = 0.0) -> str:
     # temperature 0 = deterministic: the same question gives the same answer.
     #
-    # 3-tier fallback keeps answers fast AND always available:
-    #   1. Groq main model (70b)   - best quality, ~1-2s
-    #   2. Groq fallback model (8b) - separate daily budget, still fast (~1s)
-    #   3. local Ollama            - offline last resort, slow (~1-2 min) but works
+    # Fallback chain keeps answers available even under Groq's free-tier daily caps:
+    # try each Groq model in turn (each has its OWN daily budget), then the local
+    # Ollama model as a last resort. A bad API key (401) surfaces immediately.
     if settings.chat_provider == "groq":
-        try:
-            return _chat_groq(system, user, temperature, settings.groq_model)
-        except LLMUnavailable as e:
-            fb = settings.groq_fallback_model.strip()
-            if fb and fb != settings.groq_model:
-                try:
-                    return _chat_groq(system, user, temperature, fb)
-                except LLMUnavailable:
-                    pass          # both Groq models exhausted -> go local
+        last: LLMUnavailable | None = None
+        for model in settings.groq_chain:
             try:
-                return _chat_ollama(system, user, temperature)
-            except LLMError:
-                raise LLMError(
-                    f"{e} The local fallback ({settings.chat_model}) is also "
-                    f"unavailable - wait ~30s and retry, or run `ollama serve`."
-                ) from e
+                return _chat_groq(system, user, temperature, model)
+            except LLMUnavailable as e:
+                last = e          # this model is rate-limited/down -> try the next
+        try:
+            return _chat_ollama(system, user, temperature)
+        except LLMError:
+            raise LLMError(
+                "All Groq models are rate-limited (free-tier daily budget) and no "
+                "local fallback is available. Wait a while and retry. "
+                f"(last: {last})") from last
     return _chat_ollama(system, user, temperature)
 
 

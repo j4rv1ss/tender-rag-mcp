@@ -49,11 +49,11 @@ class Settings(BaseSettings):
     # Groq (cloud, free tier) — chat only. If a key is set, chat uses Groq.
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
-    # Smaller/faster Groq model, tried when the main one is rate-limited. It has a
-    # SEPARATE free-tier budget, so answers stay fast (~1s) even after the big
-    # model's daily token cap is used up — before falling back to the slow local
-    # model. Set empty to disable this middle tier.
-    groq_fallback_model: str = "llama-3.1-8b-instant"
+    # Extra Groq models to try (in order) when the primary is rate-limited. Each has
+    # its OWN free-tier daily budget, so the app keeps working when one model's daily
+    # cap is used up - vital in the cloud, which has no local fallback. Comma-list.
+    groq_fallback_models: str = ("llama-3.1-8b-instant,openai/gpt-oss-120b,"
+                                 "openai/gpt-oss-20b")
     groq_url: str = "https://api.groq.com/openai/v1"
 
     # RAG params
@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     @property
     def active_chat_model(self) -> str:
         return self.groq_model if self.chat_provider == "groq" else self.chat_model
+
+    @property
+    def groq_chain(self) -> list[str]:
+        """Primary Groq model + fallbacks, in order, de-duplicated."""
+        chain: list[str] = []
+        for m in [self.groq_model, *self.groq_fallback_models.split(",")]:
+            m = m.strip()
+            if m and m not in chain:
+                chain.append(m)
+        return chain
 
     @property
     def embed_dim(self) -> int:
