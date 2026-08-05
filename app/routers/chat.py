@@ -10,13 +10,42 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, SummaryRequest
 from app.services import ingest_service, rag
 from app.services.embeddings import EmbeddingError
 from app.services.llm import LLMError
 from app.services.scrape import ScrapeError
 
 router = APIRouter(tags=["chat"])
+
+
+def _load_tender(db: Session, source: str, tender_id: str, auto_fetch: bool):
+    """Fetch/ensure a tender or raise the right HTTP error."""
+    try:
+        tender = ingest_service.ensure_tender(db, source, tender_id,
+                                              allow_scrape=auto_fetch)
+    except ScrapeError as e:
+        raise HTTPException(status_code=502,
+                            detail=f"couldn't fetch {source}/{tender_id}: {e}") from e
+    if tender is None:
+        reason = ("this server is query-only (scraping disabled), so only pre-loaded "
+                  "tenders can be answered" if not settings.enable_scraping else
+                  "unknown source, or auto_fetch off")
+        raise HTTPException(
+            status_code=404,
+            detail=f"tender {source}/{tender_id} is not loaded ({reason}). Load it "
+                   "first, or omit tender_id to search all loaded tenders.")
+    return tender
+
+
+@router.post("/summary", response_model=ChatResponse)
+def summary(req: SummaryRequest, db: Session = Depends(get_db)) -> ChatResponse:
+    """A grounded brief of one tender: what it is, dates, fees, eligibility, docs."""
+    try:
+        tender = _load_tender(db, req.source, req.tender_id, req.auto_fetch)
+        return rag.summarize(db, tender)
+    except (EmbeddingError, LLMError) as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 @router.post("/chat", response_model=ChatResponse)

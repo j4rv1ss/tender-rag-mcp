@@ -56,6 +56,26 @@ def answer_question(db: Session, tender: Tender, question: str,
                         chunks_used=len(chunks))
 
 
+def summarize(db: Session, tender: Tender) -> ChatResponse:
+    """Grounded brief of ONE tender: what it is, dates, fees, eligibility, docs..."""
+    query = (f"{tender.title or tender.tender_id} - scope of work, eligibility, "
+             "required documents, key dates, fees, evaluation method, contract "
+             "period, contact person")
+    k = max(settings.top_k, 12)          # broad coverage for a whole-tender brief
+    chunks = _retrieve(db, query, k, tender_pk=tender.id)
+    if not chunks:
+        return ChatResponse(
+            mode="summary", tender_id=tender.tender_id, question="(summary)",
+            answer="I couldn't find indexed content for this tender to summarise.",
+            references=[], chunks_used=0)
+    answer = llm.chat(prompts.SYSTEM_SUMMARY,
+                      prompts.build_summary_prompt(tender, chunks))
+    return ChatResponse(mode="summary", tender_id=tender.tender_id,
+                        question="(summary)", answer=answer,
+                        references=_references(chunks, cross=False),
+                        chunks_used=len(chunks))
+
+
 def answer_across_corpus(db: Session, question: str,
                          top_k: int | None = None) -> ChatResponse:
     """Cross-corpus: search every tender, attribute the answer to tenders."""

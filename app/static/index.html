@@ -26,8 +26,9 @@
 </head>
 <body>
   <h1>Tender RAG — ask about a tender</h1>
-  <p class="muted">Answers come from the tender's metadata + its documents
-    (local Ollama, offline). Swagger at <a href="/docs">/docs</a>.</p>
+  <p class="muted">Answers are grounded in the tender's metadata + documents, with
+    page sources. Ask a question, or "Summarize" the whole tender. Swagger at
+    <a href="/docs">/docs</a>.</p>
 
   <div class="row">
     <label>Source <input id="source" value="etenders" size="10"></label>
@@ -38,6 +39,7 @@
     <input id="question" placeholder="e.g. What documents are mandatory for this tender?"
            value="What documents are mandatory for this tender?">
     <button id="askBtn" class="primary">Ask</button>
+    <button id="summaryBtn" title="Grounded brief of the whole tender">Summarize</button>
   </div>
   <div id="log"></div>
 
@@ -97,8 +99,33 @@ async function ingest() {
   finally { $("ingestBtn").disabled = false; }
 }
 
+async function summarize() {
+  $("summaryBtn").disabled = true;
+  add("q", "<b>Summary of</b> " + esc($("source").value.trim()) + " / " +
+           esc($("tender").value.trim()));
+  const pending = add("a", "<span class='muted'>summarising the tender…</span>");
+  try {
+    const r = await fetch("/summary", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source: $("source").value.trim(),
+                            tender_id: $("tender").value.trim()})
+    });
+    const data = await r.json();
+    if (!r.ok) { pending.innerHTML = "<b>Error:</b> " + esc(data.detail || r.status); return; }
+    let refs = "";
+    if (data.references?.length) {
+      refs = "<div class='refs'>Sources: " + data.references.map(x =>
+        esc(x.document || "doc") + (x.page ? " p." + x.page : "")).join(" · ") + "</div>";
+    }
+    pending.innerHTML = esc(data.answer) + refs;
+  } catch (e) {
+    pending.innerHTML = "<b>Error:</b> " + esc(String(e));
+  } finally { $("summaryBtn").disabled = false; }
+}
+
 $("askBtn").onclick = ask;
 $("ingestBtn").onclick = ingest;
+$("summaryBtn").onclick = summarize;
 $("question").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
 </script>
 </body>

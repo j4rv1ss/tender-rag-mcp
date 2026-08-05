@@ -53,6 +53,12 @@ class FetchRequest(BaseModel):
     tender_id: str = Field(examples=["RW10414443-26"])
 
 
+class SummaryRequest(BaseModel):
+    source: str = Field(examples=["ppadb"])
+    tender_id: str = Field(examples=["PR/PPADB/055"])
+    auto_fetch: bool = True
+
+
 class Reference(BaseModel):
     tender: str | None = None          # set in cross-corpus mode
     document: str | None = None

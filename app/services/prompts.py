@@ -51,6 +51,11 @@ _GROUNDING_RULE = (
     "- Use EXACT values from the source - dates, times, amounts, percentages, names "
     "and reference numbers copied verbatim. You may only reformat a date/amount for "
     "readability while keeping the same value.\n"
+    "- Use the label the DOCUMENT itself uses for a field. If the user's term is not "
+    "exactly what the source calls it, still answer but name the real field - e.g. "
+    "'The document does not state a \"procurement method\"; the Evaluation Method is "
+    "X.' Do not relabel a field as a term the source never uses. (Everyday date "
+    "wordings - deadline = closing date, etc. - may be treated as the same field.)\n"
     "- If the answer is not present in the provided context, reply exactly: 'Not "
     "stated in the provided documents for this tender.' Never substitute a related "
     "or nearby fact to seem helpful."
@@ -84,6 +89,28 @@ SYSTEM_CROSS = (
     + _FORMAT_RULE +
     "\nIn the Sources line for cross-tender answers, name the tender too: "
     "<tender> | <document> p.<page>."
+)
+
+SYSTEM_SUMMARY = (
+    "You are a precise procurement analyst. Produce a factual BRIEF of ONE tender "
+    "using ONLY the TENDER METADATA and the numbered DOCUMENT EXCERPTS provided.\n\n"
+    + _GROUNDING_RULE + "\n\n"
+    "Write the brief under the headings below. Give each fact in the source's own "
+    "wording (reformat dates readably, show money with its currency) and add a page "
+    "cite like [p.5] when it comes from an excerpt. If a heading is genuinely not "
+    "covered anywhere, write 'Not stated in the provided documents'. Keep each "
+    "heading to 1-2 lines; use short bullets for eligibility and documents.\n"
+    "**<tender title>**\n"
+    "- What it is for:\n"
+    "- Buyer / organization:\n"
+    "- Key dates: published; closing; bid opening; briefing / site visit\n"
+    "- Fees & value: document fee; estimated value; bid security\n"
+    "- Evaluation method & basis of award:\n"
+    "- Contract period / delivery:\n"
+    "- Who can bid (eligibility):\n"
+    "- Documents to submit:\n"
+    "- Contact:\n"
+    "Invent nothing - every line must be traceable to the metadata or an excerpt."
 )
 
 
@@ -195,6 +222,19 @@ def build_user_prompt(tender: Tender, chunks: list[RetrievedChunk],
             f"QUESTION\n{question.strip()}\n\n"
             f"Answer using ONLY the above, in the required "
             f"Answer / Details / Sources / Confidence format.")
+
+
+def build_summary_prompt(tender: Tender, chunks: list[RetrievedChunk]) -> str:
+    ctx = []
+    for i, c in enumerate(chunks, 1):
+        tag = f"{c.document_name or 'document'} p.{c.page_number}" \
+            if c.page_number else (c.document_name or "document")
+        ctx.append(f"[{i}] [{tag}]\n{c.text.strip()}")
+    context = "\n\n".join(ctx) or "(no excerpts were found)"
+    return (f"TENDER METADATA\n{_metadata_block(tender)}\n\n"
+            f"DOCUMENT EXCERPTS\n{context}\n\n"
+            f"Write the grounded tender brief for the above, using ONLY the metadata "
+            f"and excerpts.")
 
 
 def build_cross_prompt(chunks: list[RetrievedChunk], question: str) -> str:
