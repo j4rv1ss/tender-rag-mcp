@@ -32,8 +32,11 @@ class Settings(BaseSettings):
     # The provider fixes embed_dim (below), which must match the VECTOR(n) column.
     embed_provider: str = "ollama"
 
-    # fastembed (in-process, free, offline) — bge-small-en-v1.5 is 384-dim.
+    # fastembed (in-process, free, offline). Default bge-small (384) fits the free
+    # cloud's RAM; local/production can override to bge-base (768) for better recall.
+    # fastembed_dim MUST match the model (bge-small=384, bge-base=768, bge-large=1024).
     fastembed_model: str = "BAAI/bge-small-en-v1.5"
+    fastembed_dim: int = 384
     fastembed_cache: str = ""      # model cache dir (Docker bakes the model here)
 
     # Ollama (local, free) — embeddings + chat fallback when no cloud keys are set
@@ -92,7 +95,7 @@ class Settings(BaseSettings):
     @property
     def embed_dim(self) -> int:
         # Must match the chunks.embedding VECTOR(n) column for the active provider.
-        return 384 if self.embed_provider == "fastembed" else 768
+        return self.fastembed_dim if self.embed_provider == "fastembed" else 768
 
     @property
     def active_embed_model(self) -> str:
