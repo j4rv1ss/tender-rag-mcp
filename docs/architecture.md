@@ -23,8 +23,9 @@ flowchart LR
     OUT[Tender files on disk<br/>tender_*.json + document text]
   end
   CLIENT[AI assistant<br/>Claude Desktop / Claude Code]
-  subgraph APP[Tender RAG - MCP server, stdio]
-    API[MCP tools<br/>ask, summarize, list, ingest]
+  BROWSER[Browser<br/>chat page at /]
+  subgraph APP[Tender RAG - one process, two front doors]
+    API[MCP tools /mcp + JSON API /api<br/>ask, summarize, list, ingest]
     SCR[Scrape service<br/>fetch a missing tender - local only]
     ING[Loader<br/>map, split, embed]
     RAGS[Answer engine]
@@ -35,7 +36,8 @@ flowchart LR
   LLM[Llama 4 - cloud<br/>OpenRouter, writes the answer]
 
   OUT --> ING
-  CLIENT -->|JSON-RPC over stdio| API
+  CLIENT -->|JSON-RPC, stdio or /mcp| API
+  BROWSER -->|plain HTTP /api| API
   API --> SCR --> ING
   ING --> EMB
   ING --> DB
@@ -47,8 +49,12 @@ flowchart LR
 
 **In words:**
 - Your **AI assistant** launches this server as a child process and calls its
-  **MCP tools** over stdin/stdout. There is no web server and no port — the
-  assistant is the user interface.
+  **MCP tools** over stdin/stdout. No port is involved — the assistant is the
+  user interface.
+- Run with `--http` instead and the *same process* also serves a browser: the
+  chat page at `/`, a small JSON API at `/api/*`, and MCP at `/mcp`. Both
+  front doors are thin adapters over the same services, so they cannot answer
+  differently.
 - The **scrapers** (separate programs) download tenders from 9 websites and save
   them as files.
 - The **Loader** reads those files, splits the documents into small pieces, uses
