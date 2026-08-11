@@ -56,13 +56,52 @@ def answer_question(db: Session, tender: Tender, question: str,
                         chunks_used=len(chunks))
 
 
+# The brief used to retrieve on ONE query naming the title and all eight headings.
+# That failed twice over: the dense vector came out smeared across eight subjects,
+# AND websearch_to_tsquery ANDs its terms, so a query that long matched zero chunks
+# and silenced the keyword leg entirely — the very leg that finds literal strings
+# like "Tender Document Fees: 100.00". Result: headings reported "Not stated" while
+# the facts sat unretrieved one page away.
+#
+# So: one SHORT, single-concept query per heading. Short keeps the keyword leg alive
+# (verified: "tender document fee" matches 3 chunks, the old long form matched 0) and
+# keeps each vector sharp. No title prefix — retrieval is already scoped by tender_pk,
+# so the title only dilutes both legs.
+_SUMMARY_ASPECTS = (
+    "tender document fee",
+    "bid security deposit",
+    "estimated value budget",
+    "closing date submission deadline",
+    "bid opening",
+    "briefing session site visit",
+    "eligibility criteria",
+    "documents to submit",
+    "evaluation method basis of award",
+    "scope of work",
+    "contract period",
+    "contact person enquiries",
+)
+_PER_ASPECT = 3          # chunks pulled per aspect before de-duplication
+_SUMMARY_BUDGET = 20     # cap on the union, to keep the prompt affordable
+
+
 def summarize(db: Session, tender: Tender) -> ChatResponse:
     """Grounded brief of ONE tender: what it is, dates, fees, eligibility, docs..."""
-    query = (f"{tender.title or tender.tender_id} - scope of work, eligibility, "
-             "required documents, key dates, fees, evaluation method, contract "
-             "period, contact person")
-    k = max(settings.top_k, 12)          # broad coverage for a whole-tender brief
-    chunks = _retrieve(db, query, k, tender_pk=tender.id)
+    per_aspect = [_retrieve(db, aspect, _PER_ASPECT, tender_pk=tender.id)
+                  for aspect in _SUMMARY_ASPECTS]
+    # Round-robin by rank, not by aspect: every aspect contributes its #1 hit before
+    # any aspect contributes its #2, so no heading can be crowded out by another.
+    seen: set[int] = set()
+    chunks: list[RetrievedChunk] = []
+    for rank in range(_PER_ASPECT):
+        for hits in per_aspect:
+            if rank < len(hits) and len(chunks) < _SUMMARY_BUDGET:
+                c = hits[rank]
+                if c.chunk_id not in seen:
+                    seen.add(c.chunk_id)
+                    chunks.append(c)
+    # Document order reads better than relevance order in a brief.
+    chunks.sort(key=lambda c: (c.document_id, c.page_number or 0))
     if not chunks:
         return ChatResponse(
             mode="summary", tender_id=tender.tender_id, question="(summary)",
