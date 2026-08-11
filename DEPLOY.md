@@ -139,8 +139,12 @@ Your `.env` is git-ignored, so no secrets are uploaded.
    claude mcp add --transport http tender-rag-cloud https://<service>.onrender.com/mcp
    ```
 
-> A browser can't test `/mcp`: it is POST-only and there is no `/` route, so the
-> address bar gives you a 404 (or a 401 while auth is on). Use a client.
+3. Or just open the service root in a browser — **`https://<service>.onrender.com/`
+   is a chat page**: pick *All tenders* or one tender, type a question, get a cited
+   answer. Nothing to install, so it's the easy way to demo or hand to a colleague.
+
+> `/mcp` itself is POST-only JSON-RPC — the address bar can't speak to it. Browse
+> `/` (chat) or `/healthz` (liveness); use a client for `/mcp`.
 
 ### Turning auth back on
 Set `MCP_AUTH_TOKEN` in Render → **Environment** (the **Generate** button makes a
@@ -187,8 +191,9 @@ docker run -p 8000:8000 --env-file .env tender-rag \
   `health_check` also reports your configuration. Set the token to close this.
 - **The `.onrender.com` hostname is guessable and gets crawled.** Treat an open
   deployment as public data, and keep anything confidential out of the corpus.
-- **`/healthz` is always unauthenticated** (hosts must probe it) and returns
-  nothing but a liveness flag.
+- **`/healthz` and `/` are always unauthenticated** — hosts must probe the first,
+  and the second is inert markup. `/healthz` returns nothing but a liveness flag;
+  the chat page holds no data of its own and asks for a token when `/api/*` 401s.
 - **DNS-rebinding protection** rejects unknown `Host` headers with `421`. Render's
   hostname is trusted automatically via `RENDER_EXTERNAL_HOSTNAME`; on any other
   host set `MCP_ALLOWED_HOSTS=your.domain.com`.
@@ -202,7 +207,8 @@ docker run -p 8000:8000 --env-file .env tender-rag \
   `%APPDATA%\Claude\logs\`.
 - **Everything returns 401.** A token is set — either clear `MCP_AUTH_TOKEN` in
   Render, or send exactly `Authorization: Bearer <token>` matching its value.
-  (Browsing `/` gives this too: only `/healthz` is exempt.)
+  (The chat page at `/` still loads, but its `/api/*` calls 401 until you paste the
+  token into the box it reveals.)
 - **`421 Misdirected Request`.** The `Host` header isn't in the allowlist — set
   `MCP_ALLOWED_HOSTS`.
 - **`postgres: error`** → check the values and, for Neon, `POSTGRES_SSLMODE=require`.

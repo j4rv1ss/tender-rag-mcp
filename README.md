@@ -87,12 +87,16 @@ Answer + references (which document, which page)
 | **SQLAlchemy** | talks to the database from Python | reads/writes tenders, documents, chunks |
 
 **Why MCP instead of a website?** Previously this ran as a web app you opened in a
-browser. Now it is an **MCP server**: instead of you typing into a chat page, your
-AI assistant calls the tender tools itself. That means you can ask *"is the Rand
-Water cathodic-protection tender worth bidding for?"* in a normal conversation, and
-the assistant will look it up in this system, read the real documents, and answer —
-mixing it freely with everything else it can do. There is no web page and no HTTP
-API any more; the assistant **is** the interface.
+browser. Now it is primarily an **MCP server**: instead of you typing into a chat
+page, your AI assistant calls the tender tools itself. That means you can ask *"is
+the Rand Water cathodic-protection tender worth bidding for?"* in a normal
+conversation, and the assistant will look it up in this system, read the real
+documents, and answer — mixing it freely with everything else it can do.
+
+When hosted over HTTP the server also serves a **plain chat page at `/`**, for
+demos and for anyone without an MCP client. It calls the same RAG pipeline through
+`POST /api/chat`; the assistant is the richer interface, the page is the zero-install
+one.
 
 **Why is the "meaning numbers" part built into the app?**
 Making embeddings in-process (with a small model called `bge-small`, 384 numbers

@@ -20,6 +20,9 @@ Two transports:
     python -m app.mcp_server            stdio  — a local client owns the process
     python -m app.mcp_server --http     hosted — public endpoint; open unless
                                         MCP_AUTH_TOKEN is set (then bearer required)
+
+--http also serves a browser chat page at / (see _http_app): the same RAG pipeline
+over POST /api/chat, for people without an MCP client.
 """
 from __future__ import annotations
 
@@ -30,6 +33,7 @@ import sys
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
@@ -458,20 +462,88 @@ class BearerAuth:
         await self.app(scope, receive, send)
 
 
+class _HttpError(Exception):
+    """A domain failure with the HTTP status the browser chat should see."""
+
+    def __init__(self, status: int, detail: str):
+        super().__init__(detail)
+        self.status, self.detail = status, detail
+
+
+@contextmanager
+def _web_db() -> Iterator[Session]:
+    """Session per web request. The HTTP sibling of _db(): same domain errors, but
+    mapped to status codes instead of ToolError (the chat page is not an MCP client).
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    except EmbeddingError as e:
+        raise _HttpError(503, f"embedding backend unavailable: {e}") from e
+    except LLMError as e:
+        raise _HttpError(503, f"chat model unavailable: {e}") from e
+    except ScrapeError as e:
+        raise _HttpError(502, f"scrape failed: {e}") from e
+    except normalize.TenderNotFound as e:
+        raise _HttpError(404, str(e)) from e
+    finally:
+        db.close()
+
+
 def _http_app(path: str, stateless: bool):
-    """Build the ASGI app: MCP endpoint + an unauthenticated /healthz probe."""
+    """Build the ASGI app: MCP endpoint, the browser chat page, and /healthz."""
+    from starlette.concurrency import run_in_threadpool
     from starlette.requests import Request
-    from starlette.responses import JSONResponse
+    from starlette.responses import FileResponse, JSONResponse
     from starlette.routing import Route
 
     from mcp.server.transport_security import TransportSecuritySettings
 
     token = settings.mcp_auth_token.strip()
+    _page = Path(__file__).resolve().parent / "static" / "index.html"
 
     async def healthz(request: Request) -> JSONResponse:
         # Hosts need an unauthenticated liveness probe; keep it free of secrets
         # and of anything that touches the database on every ping.
         return JSONResponse({"status": "alive", "server": "tender-rag"})
+
+    async def home(request: Request) -> FileResponse:
+        return FileResponse(str(_page))
+
+    # The DB/RAG work below is blocking (a question costs ~5s: embed -> retrieve ->
+    # LLM), so it must never run on the event loop that also serves the MCP stream.
+    # Starlette threadpools plain `def` endpoints; `chat` needs `await request.json()`
+    # first, so it hands the blocking half off explicitly.
+    def tenders(request: Request) -> JSONResponse:
+        with _web_db() as db:
+            rows = db.execute(select(Tender).order_by(Tender.source,
+                                                      Tender.tender_id)).scalars()
+            return JSONResponse([
+                {"source": t.source, "tender_id": t.tender_id,
+                 "tender_number": t.tender_number, "title": t.title} for t in rows])
+
+    async def chat(request: Request) -> JSONResponse:
+        body = await request.json()
+        return await run_in_threadpool(_chat_sync, body)
+
+    def _chat_sync(body: dict) -> JSONResponse:
+        question = (body.get("question") or "").strip()
+        tender_id = (body.get("tender_id") or "").strip()
+        want_summary = bool(body.get("summary"))
+        if not question and not want_summary:
+            return JSONResponse({"detail": "question is empty"}, status_code=422)
+        with _web_db() as db:
+            if tender_id:
+                source = (body.get("source") or "").strip() or "etenders"
+                tender = ingest_service.ensure_tender(
+                    db, source, tender_id, allow_scrape=settings.enable_scraping)
+                if tender is None:
+                    raise _HttpError(404, f"tender {source}/{tender_id} is not loaded")
+                res = (rag.summarize(db, tender) if want_summary else
+                       rag.answer_question(db, tender, question, body.get("top_k")))
+            else:
+                res = rag.answer_across_corpus(db, question, body.get("top_k"))
+        return JSONResponse(res.model_dump())
 
     app = mcp.streamable_http_app(
         streamable_http_path=path,
@@ -480,14 +552,25 @@ def _http_app(path: str, stateless: bool):
             allowed_hosts=settings.allowed_hosts,
             allowed_origins=settings.allowed_hosts),
     )
-    app.router.routes.append(Route("/healthz", healthz, methods=["GET"]))
+    async def on_http_error(request: Request, exc: _HttpError) -> JSONResponse:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status)
+
+    app.add_exception_handler(_HttpError, on_http_error)
+    app.router.routes += [
+        Route("/healthz", healthz, methods=["GET"]),
+        Route("/", home, methods=["GET"]),
+        Route("/api/tenders", tenders, methods=["GET"]),
+        Route("/api/chat", chat, methods=["POST"]),
+    ]
     if not token:
         # Open endpoint: anyone who knows the URL can call every tool, including
         # the expensive scrape/ingest ones. Set MCP_AUTH_TOKEN to require a token.
         log.warning("MCP_AUTH_TOKEN is not set — serving %s WITHOUT authentication. "
                     "Anyone with the URL can call every tool.", path)
         return app
-    return BearerAuth(app, token, exempt=frozenset({"/healthz"}))
+    # "/" is inert markup, so it loads without a token and its script then prompts
+    # for one; /api/* carries corpus data and stays behind the same check as /mcp.
+    return BearerAuth(app, token, exempt=frozenset({"/healthz", "/"}))
 
 
 def main() -> None:
