@@ -107,8 +107,9 @@ def summarize(db: Session, tender: Tender) -> ChatResponse:
             mode="summary", tender_id=tender.tender_id, question="(summary)",
             answer="I couldn't find indexed content for this tender to summarise.",
             references=[], chunks_used=0)
-    answer = llm.chat(prompts.SYSTEM_SUMMARY,
-                      prompts.build_summary_prompt(tender, chunks))
+    answer = prompts.strip_uncovered(
+        llm.chat(prompts.SYSTEM_SUMMARY,
+                 prompts.build_summary_prompt(tender, chunks)))
     return ChatResponse(mode="summary", tender_id=tender.tender_id,
                         question="(summary)", answer=answer,
                         references=_references(chunks, cross=False),

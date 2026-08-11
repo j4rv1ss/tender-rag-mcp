@@ -105,9 +105,13 @@ SYSTEM_SUMMARY = (
     + _GROUNDING_RULE + "\n\n"
     "Write the brief under the headings below. Give each fact in the source's own "
     "wording (reformat dates readably, show money with its currency) and add a page "
-    "cite like [p.5] when it comes from an excerpt. If a heading is genuinely not "
-    "covered anywhere, write 'Not stated in the provided documents'. Keep each "
-    "heading to 1-2 lines; use short bullets for eligibility and documents.\n"
+    "cite like [p.5] when it comes from an excerpt.\n"
+    "OMIT what the sources do not cover: drop that item, and drop the whole heading "
+    "when none of its items has a fact. Never pad with 'Not stated', 'N/A', "
+    "'Not available' or similar - a heading's ABSENCE is how the brief says the "
+    "documents do not cover it. A short brief of only known facts is the goal.\n"
+    "Keep each heading to 1-2 lines; use short bullets for eligibility and "
+    "documents.\n"
     "**<tender title>**\n"
     "- What it is for:\n"
     "- Buyer / organization:\n"
@@ -120,6 +124,35 @@ SYSTEM_SUMMARY = (
     "- Contact:\n"
     "Invent nothing - every line must be traceable to the metadata or an excerpt."
 )
+
+
+# Models comply with "omit what you don't have" only most of the time, so the brief
+# gets a deterministic second pass. The tell is the citation: every real fact carries
+# one ([p.7] or [TENDER METADATA]), a padded line carries none. That distinction is
+# what keeps a document's own "Bid security: Not Applicable [p.2]" while dropping an
+# invented "Estimated value: Not stated in the provided documents".
+_NO_INFO = re.compile(
+    r"(?i)\b(not stated|not available|not specified|not provided|not mentioned|"
+    r"not indicated|not disclosed|not given|not found|no information|unspecified|"
+    r"unknown)\b")
+_CITED = re.compile(r"(?i)\[\s*(?:p\.\s*\d+|tender metadata)")
+# "- Key dates:" — a label whose value is empty, i.e. it only had sub-bullets.
+_EMPTY_LABEL = re.compile(r"^\s*[-*]\s*[^:]{1,60}:\s*$")
+
+
+def strip_uncovered(brief: str) -> str:
+    """Remove uncited 'Not stated'-style lines, then headings left with nothing."""
+    kept = [ln for ln in brief.splitlines()
+            if not (_NO_INFO.search(ln) and not _CITED.search(ln))]
+    out: list[str] = []
+    for i, line in enumerate(kept):
+        if _EMPTY_LABEL.match(line):
+            indent = len(line) - len(line.lstrip())
+            nxt = next((k for k in kept[i + 1:] if k.strip()), "")
+            if not nxt or (len(nxt) - len(nxt.lstrip())) <= indent:
+                continue          # every sub-bullet was dropped; drop the heading
+        out.append(line)
+    return "\n".join(out).strip()
 
 
 # Keys already shown in the canonical block, or too noisy to repeat.
