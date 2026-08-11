@@ -70,9 +70,9 @@ class Settings(BaseSettings):
 
     # --- MCP transport ------------------------------------------------------
     # stdio (default) needs none of this: the client owns the process, so it is
-    # already as trusted as the user. The HTTP transport is a public endpoint,
-    # so it requires a shared bearer token — the server refuses to start in HTTP
-    # mode without one rather than silently exposing the corpus.
+    # already as trusted as the user. The HTTP transport is a public endpoint;
+    # set a shared bearer token here to require `Authorization: Bearer <token>`.
+    # Blank (the default) serves it OPEN — anyone with the URL can call any tool.
     mcp_auth_token: str = ""
     mcp_host: str = "127.0.0.1"          # 0.0.0.0 when hosted
     mcp_port: int = 8000                 # hosts inject $PORT; see main()

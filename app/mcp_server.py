@@ -18,7 +18,8 @@ Endpoint -> tool mapping from the previous REST API:
 
 Two transports:
     python -m app.mcp_server            stdio  — a local client owns the process
-    python -m app.mcp_server --http     hosted — public endpoint, bearer token required
+    python -m app.mcp_server --http     hosted — public endpoint; open unless
+                                        MCP_AUTH_TOKEN is set (then bearer required)
 """
 from __future__ import annotations
 
@@ -427,6 +428,9 @@ def bid_assessment(tender_id: str, source: str = "etenders") -> str:
 class BearerAuth:
     """Raw ASGI middleware enforcing a shared bearer token.
 
+    Only wrapped around the app when MCP_AUTH_TOKEN is set; with no token the
+    endpoint is served open (see _http_app).
+
     Deliberately not a Starlette BaseHTTPMiddleware: that buffers responses and
     would break the streaming (SSE) leg of the streamable-HTTP transport.
     """
@@ -462,11 +466,7 @@ def _http_app(path: str, stateless: bool):
 
     from mcp.server.transport_security import TransportSecuritySettings
 
-    if not settings.mcp_auth_token.strip():
-        raise SystemExit(
-            "MCP_AUTH_TOKEN is not set. The HTTP transport is a public endpoint; "
-            "refusing to start without a bearer token. Generate one with:\n"
-            "  python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+    token = settings.mcp_auth_token.strip()
 
     async def healthz(request: Request) -> JSONResponse:
         # Hosts need an unauthenticated liveness probe; keep it free of secrets
@@ -481,8 +481,13 @@ def _http_app(path: str, stateless: bool):
             allowed_origins=settings.allowed_hosts),
     )
     app.router.routes.append(Route("/healthz", healthz, methods=["GET"]))
-    return BearerAuth(app, settings.mcp_auth_token.strip(),
-                      exempt=frozenset({"/healthz"}))
+    if not token:
+        # Open endpoint: anyone who knows the URL can call every tool, including
+        # the expensive scrape/ingest ones. Set MCP_AUTH_TOKEN to require a token.
+        log.warning("MCP_AUTH_TOKEN is not set — serving %s WITHOUT authentication. "
+                    "Anyone with the URL can call every tool.", path)
+        return app
+    return BearerAuth(app, token, exempt=frozenset({"/healthz"}))
 
 
 def main() -> None:
@@ -491,7 +496,8 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Tender RAG MCP server")
     parser.add_argument("--http", action="store_true",
-                        help="serve streamable HTTP instead of stdio (needs MCP_AUTH_TOKEN)")
+                        help="serve streamable HTTP instead of stdio (open unless "
+                             "MCP_AUTH_TOKEN is set)")
     parser.add_argument("--host", default=settings.mcp_host)
     parser.add_argument("--port", type=int,
                         default=int(os.environ.get("PORT") or settings.mcp_port),
@@ -507,8 +513,10 @@ def main() -> None:
         return
 
     import uvicorn
-    log.info("serving MCP over HTTP on %s:%d%s | allowed hosts: %s",
-             args.host, args.port, args.path, ", ".join(settings.allowed_hosts))
+    log.info("serving MCP over HTTP on %s:%d%s | auth: %s | allowed hosts: %s",
+             args.host, args.port, args.path,
+             "bearer token" if settings.mcp_auth_token.strip() else "NONE (open)",
+             ", ".join(settings.allowed_hosts))
     uvicorn.run(_http_app(args.path, stateless=not args.stateful),
                 host=args.host, port=args.port, log_level="info")
 

@@ -6,7 +6,7 @@ The server speaks two transports. Pick by who needs to reach it.
 |---|---|---|
 | Runs | on your PC, launched by your assistant | on a host, always on |
 | Address | none — a child process | `https://<service>.onrender.com/mcp` |
-| Auth | none needed (the client owns the process) | **bearer token, required** |
+| Auth | none needed (the client owns the process) | open by default; set `MCP_AUTH_TOKEN` for a bearer token |
 | Scraping | works (`fetch_tender`) | off — no scraper binaries on the host |
 | Best for | daily local use | testing online, sharing with others |
 
@@ -112,38 +112,46 @@ Your `.env` is git-ignored, so no secrets are uploaded.
    | `LLAMA_API_KEY` | your OpenRouter key |
    | `GROQ_API_KEY` | *(optional backup)* |
 
-   `MCP_AUTH_TOKEN` is **generated for you** by Render (`generateValue: true`).
-   Everything else is already set by `render.yaml`.
+   `MCP_AUTH_TOKEN` is left **blank** by `render.yaml`, which serves the endpoint
+   **open** — see [Security notes](#security-notes-for-the-http-transport).
+   Everything else is already set.
 3. **Apply.** First build ~4–6 min (it bakes the embedding model into the image).
 
-### Step 5 — Get your token and test
-1. Render dashboard → your service → **Environment** → copy `MCP_AUTH_TOKEN`.
-2. Liveness (no auth needed):
+### Step 5 — Test
+1. Liveness:
    ```
    curl https://<service>.onrender.com/healthz
    → {"status":"alive","server":"tender-rag"}
    ```
-3. Auth is enforced — this must return **401**:
-   ```
-   curl -X POST https://<service>.onrender.com/mcp
-   ```
-4. Point a client at it:
+2. Point a client at it — no header needed while auth is off:
    ```json
    {
      "mcpServers": {
        "tender-rag": {
          "type": "http",
-         "url": "https://<service>.onrender.com/mcp",
-         "headers": { "Authorization": "Bearer <MCP_AUTH_TOKEN>" }
+         "url": "https://<service>.onrender.com/mcp"
        }
      }
    }
    ```
    Or with the CLI:
    ```
-   claude mcp add --transport http tender-rag-cloud https://<service>.onrender.com/mcp \
-     --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+   claude mcp add --transport http tender-rag-cloud https://<service>.onrender.com/mcp
    ```
+
+> A browser can't test `/mcp`: it is POST-only and there is no `/` route, so the
+> address bar gives you a 404 (or a 401 while auth is on). Use a client.
+
+### Turning auth back on
+Set `MCP_AUTH_TOKEN` in Render → **Environment** (the **Generate** button makes a
+strong value) and redeploy. Every request then needs the header, and clients add:
+```json
+"headers": { "Authorization": "Bearer <MCP_AUTH_TOKEN>" }
+```
+```
+claude mcp add --transport http tender-rag-cloud https://<service>.onrender.com/mcp \
+  --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+```
 
 ### What the free tier costs you
 - **Sleeps after 15 min idle**, ~1 min to wake. The first call after a nap may time
@@ -164,22 +172,23 @@ docker build -t tender-rag .
 docker run -i --rm --env-file .env tender-rag
 
 # HTTP
-docker run -p 8000:8000 --env-file .env -e MCP_AUTH_TOKEN=<token> tender-rag \
+docker run -p 8000:8000 --env-file .env tender-rag \
   python -m app.mcp_server --http --host 0.0.0.0
+# add -e MCP_AUTH_TOKEN=<token> to require a bearer token
 ```
 
 ---
 
 ## Security notes for the HTTP transport
 
-- **The token is the only thing between the internet and your corpus.** Anyone
-  holding it can call every tool, including `ingest_all_tenders` (heavy CPU + LLM
-  use). Treat it like a password; rotate it in Render's dashboard if it leaks.
-- **The server refuses to start in HTTP mode without `MCP_AUTH_TOKEN`** — there is
-  no "just this once" unauthenticated mode.
-- **`/healthz` is deliberately unauthenticated** (hosts must probe it) and returns
-  nothing but a liveness flag. `health_check`, which does expose configuration, is
-  an authenticated MCP tool.
+- **Auth is currently OFF** (`MCP_AUTH_TOKEN` blank), so the URL *is* the only
+  secret. Anyone who finds it can call every tool — read your whole corpus, and
+  run `ingest_all_tenders` / `fetch_tender`, which burn CPU and your LLM credits.
+  `health_check` also reports your configuration. Set the token to close this.
+- **The `.onrender.com` hostname is guessable and gets crawled.** Treat an open
+  deployment as public data, and keep anything confidential out of the corpus.
+- **`/healthz` is always unauthenticated** (hosts must probe it) and returns
+  nothing but a liveness flag.
 - **DNS-rebinding protection** rejects unknown `Host` headers with `421`. Render's
   hostname is trusted automatically via `RENDER_EXTERNAL_HOSTNAME`; on any other
   host set `MCP_ALLOWED_HOSTS=your.domain.com`.
@@ -191,8 +200,9 @@ docker run -p 8000:8000 --env-file .env -e MCP_AUTH_TOKEN=<token> tender-rag \
 - **Server missing from the client (stdio).** Check the command path points at
   `.venv\Scripts\python.exe`, not a system Python. Claude Desktop logs:
   `%APPDATA%\Claude\logs\`.
-- **Everything returns 401.** The header must be exactly
-  `Authorization: Bearer <token>` and the token must match Render's env value.
+- **Everything returns 401.** A token is set — either clear `MCP_AUTH_TOKEN` in
+  Render, or send exactly `Authorization: Bearer <token>` matching its value.
+  (Browsing `/` gives this too: only `/healthz` is exempt.)
 - **`421 Misdirected Request`.** The `Host` header isn't in the allowlist — set
   `MCP_ALLOWED_HOSTS`.
 - **`postgres: error`** → check the values and, for Neon, `POSTGRES_SSLMODE=require`.

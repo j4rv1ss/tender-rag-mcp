@@ -13,10 +13,13 @@ services:
     healthCheckPath: /healthz
     dockerCommand: python -m app.mcp_server --http --host 0.0.0.0
     envVars:
-      # --- MCP auth: REQUIRED. The server refuses to start in HTTP mode without
-      # it. Use Render's "Generate" button to create a strong value. ---
+      # --- MCP auth: OFF. With MCP_AUTH_TOKEN empty the /mcp endpoint is open to
+      # anyone who knows the URL, and every tool (including the expensive
+      # scrape/ingest ones) can be called. To turn auth back on, set this to a
+      # strong value in the dashboard ("Generate") and send it as
+      # `Authorization: Bearer <token>`. ---
       - key: MCP_AUTH_TOKEN
-        generateValue: true
+        value: ""
       # DNS-rebinding protection rejects any Host it doesn't know. Render injects
       # RENDER_EXTERNAL_HOSTNAME and config.py trusts it, so this needs nothing.
 

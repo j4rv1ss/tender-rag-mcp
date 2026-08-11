@@ -335,10 +335,10 @@ assistant. To reach it from anywhere, serve the HTTP transport instead:
 .venv\Scripts\python -m app.mcp_server --http
 ```
 
-That exposes `/mcp` and **requires** `MCP_AUTH_TOKEN` — it refuses to start
-without one, since the endpoint is public. `render.yaml` deploys it free on
-Render; see **[DEPLOY.md](DEPLOY.md)** for the walkthrough. Hosted means
-query-only (no scraper binaries) and needs a hosted Postgres.
+That exposes `/mcp`. It is **open by default** — set `MCP_AUTH_TOKEN` to require
+`Authorization: Bearer <token>` instead. `render.yaml` deploys it free on Render;
+see **[DEPLOY.md](DEPLOY.md)** for the walkthrough. Hosted means query-only (no
+scraper binaries) and needs a hosted Postgres.
 
 ---
 
