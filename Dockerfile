@@ -3,8 +3,9 @@
 #   stdio (default) — the container IS the server; a client launches it and
 #     speaks JSON-RPC over stdin/stdout, so run it with -i and never print to
 #     stdout:      docker run -i --rm --env-file .env tender-rag
-#   HTTP (hosted)   — override the command; needs MCP_AUTH_TOKEN:
-#     docker run -p 8000:8000 -e MCP_AUTH_TOKEN=... --env-file .env tender-rag \
+#   HTTP (hosted)   — override the command. Open unless MCP_AUTH_TOKEN is set,
+#     which turns on `Authorization: Bearer <token>`:
+#     docker run -p 8000:8000 --env-file .env tender-rag \
 #       python -m app.mcp_server --http --host 0.0.0.0
 #
 # Query-only by design: in-process fastembed embeddings + a cloud chat model +
