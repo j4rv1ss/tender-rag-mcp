@@ -43,7 +43,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Document, Tender
+from app.models import Chunk, Document, Tender
 from app.schemas import ChatResponse, IngestResponse, TenderOut
 from app.services import health, ingest_service, normalize, rag
 from app.services.embeddings import EmbeddingError
@@ -345,7 +345,6 @@ def fetch_tender(tender_id: str, source: str) -> IngestResponse:
                                               allow_scrape=True)
         if tender is None:
             raise ToolError(f"auto-scrape is not supported for source {source!r}")
-        from app.models import Chunk
         docs = db.execute(select(func.count(Document.id))
                           .where(Document.tender_pk == tender.id)).scalar()
         chunks = db.execute(select(func.count(Chunk.id))
@@ -510,6 +509,10 @@ def _http_app(path: str, stateless: bool):
     async def home(request: Request) -> FileResponse:
         return FileResponse(str(_page))
 
+    def health_route(request: Request) -> JSONResponse:
+        # Same probe the health_check tool reports, so the two can't disagree.
+        return JSONResponse(health.check())
+
     # The DB/RAG work below is blocking (a question costs ~5s: embed -> retrieve ->
     # LLM), so it must never run on the event loop that also serves the MCP stream.
     # Starlette threadpools plain `def` endpoints; `chat` needs `await request.json()`
@@ -525,6 +528,36 @@ def _http_app(path: str, stateless: bool):
     async def chat(request: Request) -> JSONResponse:
         body = await request.json()
         return await run_in_threadpool(_chat_sync, body)
+
+    async def summary(request: Request) -> JSONResponse:
+        # Same path as chat, with the whole-tender brief flag forced on.
+        body = await request.json()
+        return await run_in_threadpool(_chat_sync, {**body, "summary": True})
+
+    async def ingest(request: Request) -> JSONResponse:
+        body = await request.json()
+        return await run_in_threadpool(_ingest_sync, body)
+
+    def _ingest_sync(body: dict) -> JSONResponse:
+        tender_id = (body.get("tender_id") or "").strip()
+        if not tender_id:
+            return JSONResponse({"detail": "tender_id is required"}, status_code=422)
+        source = (body.get("source") or "").strip() or "etenders"
+        with _web_db() as db:
+            # Mirrors the ingest_tender tool: load from disk, scraping only if the
+            # server is configured for it (cloud hosts have no scraper binaries).
+            tender = ingest_service.ensure_tender(
+                db, source, tender_id, allow_scrape=settings.enable_scraping)
+            if tender is None:
+                raise _HttpError(
+                    404, f"{source}/{tender_id} is not on disk and could not be "
+                         "fetched (scraping disabled or source unsupported)")
+            docs = db.execute(select(func.count(Document.id))
+                              .where(Document.tender_pk == tender.id)).scalar()
+            chunks = db.execute(select(func.count(Chunk.id))
+                                .where(Chunk.tender_pk == tender.id)).scalar()
+        return JSONResponse({"source": tender.source, "tender_id": tender.tender_id,
+                             "documents": docs, "chunks": chunks})
 
     def _chat_sync(body: dict) -> JSONResponse:
         question = (body.get("question") or "").strip()
@@ -561,6 +594,9 @@ def _http_app(path: str, stateless: bool):
         Route("/", home, methods=["GET"]),
         Route("/api/tenders", tenders, methods=["GET"]),
         Route("/api/chat", chat, methods=["POST"]),
+        Route("/api/summary", summary, methods=["POST"]),
+        Route("/api/ingest", ingest, methods=["POST"]),
+        Route("/api/health", health_route, methods=["GET"]),
     ]
     if not token:
         # Open endpoint: anyone who knows the URL can call every tool, including

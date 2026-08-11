@@ -6,66 +6,46 @@
 <title>Tender RAG — Chat</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 24px auto;
+  body { font-family: system-ui, sans-serif; max-width: 820px; margin: 24px auto;
          padding: 0 16px; line-height: 1.45; }
-  h1 { font-size: 1.3rem; margin-bottom: 4px; }
+  h1 { font-size: 1.3rem; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   input, button, select { font: inherit; padding: 8px 10px; border-radius: 8px;
          border: 1px solid #8888; }
-  select { max-width: 100%; }
-  #question { flex: 1 1 340px; }
+  #question { flex: 1 1 320px; }
   #log { margin-top: 18px; display: flex; flex-direction: column; gap: 14px; }
   .msg { padding: 10px 12px; border-radius: 10px; border: 1px solid #8884; }
   .q { background: #4f8cff22; }
   .a { background: #22c55e18; white-space: pre-wrap; }
-  .err { background: #ef444422; }
-  .refs { font-size: .85rem; opacity: .8; margin-top: 8px; white-space: normal; }
-  .refs b { opacity: .9; }
+  .refs { font-size: .85rem; opacity: .8; margin-top: 6px; }
   .muted { opacity: .65; font-size: .9rem; }
   button.primary { background: #4f8cff; color: #fff; border-color: #4f8cff;
          cursor: pointer; }
-  button { cursor: pointer; }
   button:disabled { opacity: .5; cursor: progress; }
-  #tokenRow { display: none; margin-top: 10px; }
 </style>
 </head>
 <body>
   <h1>Tender RAG — ask about a tender</h1>
-  <p class="muted">Answers are grounded in the indexed tender documents and cite the
-    pages they came from. Pick <b>All tenders</b> to search the whole corpus, or one
-    tender to scope the question and enable Summarize.</p>
+  <p class="muted">Answers are grounded in the tender's metadata + documents, with
+    page sources. Ask a question, or "Summarize" the whole tender. Swagger at
+    <a href="/docs">/docs</a>.</p>
 
   <div class="row">
-    <select id="tender" style="flex:1 1 380px"><option value="">All tenders</option></select>
-    <button id="summaryBtn" title="Grounded brief of the selected tender" disabled>Summarize</button>
+    <label>Source <input id="source" value="etenders" size="10"></label>
+    <label>Tender ID <input id="tender" value="162660" size="10"></label>
+    <button id="ingestBtn">Ingest</button>
   </div>
   <div class="row" style="margin-top:10px">
-    <input id="question" placeholder="e.g. Which tenders are for road or highway works?">
+    <input id="question" placeholder="e.g. What documents are mandatory for this tender?"
+           value="What documents are mandatory for this tender?">
     <button id="askBtn" class="primary">Ask</button>
-  </div>
-  <div class="row" id="tokenRow">
-    <label>Access token <input id="token" size="34" placeholder="MCP_AUTH_TOKEN"></label>
-    <span class="muted">This server requires a token; it is kept in your browser only.</span>
+    <button id="summaryBtn" title="Grounded brief of the whole tender">Summarize</button>
   </div>
   <div id="log"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const log = $("log");
-const esc = (s) => (s ?? "").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-
-// Only needed if MCP_AUTH_TOKEN is set on the server; the row stays hidden until a
-// request comes back 401.
-$("token").value = localStorage.getItem("tenderRagToken") || "";
-$("token").addEventListener("change", () =>
-  localStorage.setItem("tenderRagToken", $("token").value.trim()));
-
-function headers() {
-  const h = {"Content-Type": "application/json"};
-  const t = $("token").value.trim();
-  if (t) h["Authorization"] = "Bearer " + t;
-  return h;
-}
 
 function add(cls, html) {
   const d = document.createElement("div");
@@ -74,100 +54,79 @@ function add(cls, html) {
   log.prepend(d);
   return d;
 }
-
-function renderRefs(refs) {
-  if (!refs?.length) return "";
-  const items = refs.map(x => {
-    const where = [x.tender, x.document || "document"].filter(Boolean).join(" · ");
-    return esc(where) + (x.page ? " p." + x.page : "") +
-           (x.score != null ? " <span class='muted'>(" + x.score + ")</span>" : "");
-  });
-  return "<div class='refs'><b>Sources</b><br>" + items.join("<br>") + "</div>";
-}
-
-// The free tier sleeps after 15 min idle and takes ~50s to wake, which otherwise
-// just looks like a hang. Escalate the wording rather than leaving it blank.
-function pendingNote(el, label) {
-  el.innerHTML = "<span class='muted'>" + label + "</span>";
-  const t1 = setTimeout(() => el.innerHTML =
-    "<span class='muted'>still working — the server may be waking from sleep (~50s)…</span>", 8000);
-  return () => clearTimeout(t1);
-}
-
-async function call(path, body, pending) {
-  const r = await fetch(path, {method: "POST", headers: headers(),
-                               body: JSON.stringify(body)});
-  const data = await r.json().catch(() => ({}));
-  if (r.status === 401) {
-    $("tokenRow").style.display = "flex";
-    throw new Error("This server needs an access token — enter it below and retry.");
-  }
-  if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
-  return data;
-}
+const esc = (s) => (s ?? "").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 async function ask() {
   const question = $("question").value.trim();
   if (!question) return;
-  const sel = $("tender").value;               // "" = whole corpus, else "source/id"
   $("askBtn").disabled = true;
-  add("q", "<b>Q:</b> " + esc(question) +
-      (sel ? " <span class='muted'>· " + esc(sel) + "</span>" : ""));
-  const pending = add("a", "");
-  const done = pendingNote(pending, "thinking…");
+  add("q", "<b>Q:</b> " + esc(question));
+  const pending = add("a", "<span class='muted'>thinking… (local model, may take a while)</span>");
   try {
-    const body = {question};
-    if (sel) { const [source, ...rest] = sel.split("/");
-               body.source = source; body.tender_id = rest.join("/"); }
-    const data = await call("/api/chat", body, pending);
-    pending.innerHTML = "<b>A:</b> " + esc(data.answer) + renderRefs(data.references);
+    const r = await fetch("/api/chat", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source: $("source").value.trim(),
+                            tender_id: $("tender").value.trim(), question})
+    });
+    const data = await r.json();
+    if (!r.ok) { pending.innerHTML = "<b>Error:</b> " + esc(data.detail || r.status); return; }
+    let refs = "";
+    if (data.references?.length) {
+      refs = "<div class='refs'>Sources: " + data.references.map(x =>
+        esc(x.document || "doc") + (x.page ? " p." + x.page : "") +
+        " (" + x.score + ")").join(" · ") + "</div>";
+    }
+    pending.innerHTML = "<b>A:</b> " + esc(data.answer) + refs;
   } catch (e) {
-    pending.className = "msg err";
-    pending.innerHTML = "<b>Error:</b> " + esc(e.message);
-  } finally { done(); $("askBtn").disabled = false; }
+    pending.innerHTML = "<b>Error:</b> " + esc(String(e));
+  } finally { $("askBtn").disabled = false; }
+}
+
+async function ingest() {
+  $("ingestBtn").disabled = true;
+  const note = add("a", "<span class='muted'>ingesting…</span>");
+  try {
+    const r = await fetch("/api/ingest", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source: $("source").value.trim(),
+                            tender_id: $("tender").value.trim()})
+    });
+    const data = await r.json();
+    note.innerHTML = r.ok
+      ? `Ingested ${esc(data.tender_id)}: ${data.documents} docs, ${data.chunks} chunks embedded.`
+      : "<b>Ingest error:</b> " + esc(data.detail || r.status);
+  } catch (e) { note.innerHTML = "<b>Error:</b> " + esc(String(e)); }
+  finally { $("ingestBtn").disabled = false; }
 }
 
 async function summarize() {
-  const sel = $("tender").value;
-  if (!sel) return;
   $("summaryBtn").disabled = true;
-  add("q", "<b>Summary of</b> " + esc(sel));
-  const pending = add("a", "");
-  const done = pendingNote(pending, "summarising the tender…");
+  add("q", "<b>Summary of</b> " + esc($("source").value.trim()) + " / " +
+           esc($("tender").value.trim()));
+  const pending = add("a", "<span class='muted'>summarising the tender…</span>");
   try {
-    const [source, ...rest] = sel.split("/");
-    const data = await call("/api/chat",
-      {question: "(summary)", source, tender_id: rest.join("/"), summary: true});
-    pending.innerHTML = esc(data.answer) + renderRefs(data.references);
-  } catch (e) {
-    pending.className = "msg err";
-    pending.innerHTML = "<b>Error:</b> " + esc(e.message);
-  } finally { done(); $("summaryBtn").disabled = false; }
-}
-
-async function loadTenders() {
-  try {
-    const r = await fetch("/api/tenders", {headers: headers()});
-    if (r.status === 401) { $("tokenRow").style.display = "flex"; return; }
-    const items = await r.json();
-    for (const t of items) {
-      const o = document.createElement("option");
-      o.value = t.source + "/" + t.tender_id;
-      o.textContent = (t.tender_number || t.tender_id) +
-                      (t.title ? " — " + t.title.slice(0, 80) : "");
-      $("tender").appendChild(o);
+    const r = await fetch("/api/summary", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source: $("source").value.trim(),
+                            tender_id: $("tender").value.trim()})
+    });
+    const data = await r.json();
+    if (!r.ok) { pending.innerHTML = "<b>Error:</b> " + esc(data.detail || r.status); return; }
+    let refs = "";
+    if (data.references?.length) {
+      refs = "<div class='refs'>Sources: " + data.references.map(x =>
+        esc(x.document || "doc") + (x.page ? " p." + x.page : "")).join(" · ") + "</div>";
     }
-    $("tender").options[0].textContent = `All tenders (${items.length} loaded)`;
+    pending.innerHTML = esc(data.answer) + refs;
   } catch (e) {
-    add("err", "Couldn't load the tender list: " + esc(String(e)));
-  }
+    pending.innerHTML = "<b>Error:</b> " + esc(String(e));
+  } finally { $("summaryBtn").disabled = false; }
 }
 
 $("askBtn").onclick = ask;
+$("ingestBtn").onclick = ingest;
 $("summaryBtn").onclick = summarize;
-$("tender").onchange = () => $("summaryBtn").disabled = !$("tender").value;
 $("question").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
-loadTenders();
 </script>
 </body>
 </html>
