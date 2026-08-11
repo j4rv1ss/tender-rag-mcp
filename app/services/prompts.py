@@ -135,7 +135,11 @@ _NO_INFO = re.compile(
     r"(?i)\b(not stated|not available|not specified|not provided|not mentioned|"
     r"not indicated|not disclosed|not given|not found|no information|unspecified|"
     r"unknown)\b")
-_CITED = re.compile(r"(?i)\[\s*(?:p\.\s*\d+|tender metadata)")
+# Cites come in several shapes - [p.5], [p.2, p.3], [1, p.1], [8, Excerpt 11],
+# [TENDER METADATA] - so match the marker anywhere inside the brackets. Anchoring
+# this to the start of the bracket would misread "[3, p.7]" as uncited and delete a
+# real "Not Applicable [3, p.7]".
+_CITED = re.compile(r"(?i)\[[^\]]*(?:p\.\s*\d+|tender metadata|excerpt)[^\]]*\]")
 # "- Key dates:" — a label whose value is empty, i.e. it only had sub-bullets.
 _EMPTY_LABEL = re.compile(r"^\s*[-*]\s*[^:]{1,60}:\s*$")
 
