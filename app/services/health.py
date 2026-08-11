@@ -1,18 +1,18 @@
-"""GET /health — DB + pgvector, and whichever AI providers are actually in use."""
+"""Diagnostics: DB + pgvector, and whichever AI providers are actually in use.
+
+Lives in services (not a transport layer) so the MCP server stays a thin adapter.
+"""
 from __future__ import annotations
 
 import httpx
-from fastapi import APIRouter
 from sqlalchemy import text
 
 from app.config import settings
 from app.db import engine
 
-router = APIRouter(tags=["health"])
 
-
-@router.get("/health")
-def health() -> dict:
+def check() -> dict:
+    """Probe every dependency the server needs; never raises."""
     report: dict = {"status": "ok", "checks": {}}
 
     def degrade() -> None:
@@ -48,15 +48,20 @@ def health() -> dict:
     elif settings.embed_provider == "gemini":
         report["checks"]["google_key"] = "set" if settings.google_api_key.strip() else "MISSING"
 
-    # Chat provider
-    if settings.chat_provider == "groq":
-        report["checks"]["chat_provider"] = "groq"
-        report["checks"]["groq_key"] = "set" if settings.groq_api_key.strip() else "MISSING"
-    else:
-        report["checks"]["chat_provider"] = "ollama"
+    # Chat provider: cloud OpenAI-compatible endpoints (Llama API + Groq backup),
+    # else the optional offline Ollama model.
+    report["checks"]["chat_provider"] = settings.chat_provider
+    if settings.chat_provider == "api":
+        report["checks"]["llama_api_key"] = (
+            "set" if settings.llama_api_key.strip() else "not set")
+        report["checks"]["groq_backup_key"] = (
+            "set" if settings.groq_api_key.strip() else "not set")
+        report["checks"]["chat_endpoints"] = [
+            f'{e["provider"]}:{e["model"]}' for e in settings.chat_endpoints]
 
     # Ollama — only relevant when it actually serves embeddings or chat.
-    needs_ollama = settings.embed_provider == "ollama" or settings.chat_provider == "ollama"
+    needs_ollama = (settings.embed_provider == "ollama"
+                    or (settings.chat_provider == "ollama" and settings.chat_model.strip()))
     if needs_ollama:
         try:
             with httpx.Client(base_url=settings.ollama_url, timeout=5.0) as c:
@@ -74,7 +79,7 @@ def health() -> dict:
                     else f"missing — run: ollama pull {settings.embed_model}")
                 if not model_ok(settings.embed_model):
                     degrade()
-            if settings.chat_provider == "ollama":
+            if settings.chat_provider == "ollama" and settings.chat_model.strip():
                 report["checks"]["chat_model"] = (
                     "ok" if model_ok(settings.chat_model)
                     else f"missing — run: ollama pull {settings.chat_model}")
@@ -95,3 +100,17 @@ def health() -> dict:
         "top_k": settings.top_k,
     }
     return report
+
+
+def warmup() -> None:
+    """Load the embedding/reranker models and prime the LLM connection.
+
+    A cold embed connection costs ~2.5s on its first real query; paying that
+    up front keeps the first tool call fast. Non-fatal — raises nothing.
+    """
+    from app.services import llm, reranker
+    from app.services.embeddings import embed_query
+
+    embed_query("warmup")
+    reranker.warmup()                                  # load reranker model (if on)
+    llm.chat("You are a warmup.", "Reply with OK.")    # prime the LLM connection

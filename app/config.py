@@ -39,9 +39,11 @@ class Settings(BaseSettings):
     fastembed_dim: int = 384
     fastembed_cache: str = ""      # model cache dir (Docker bakes the model here)
 
-    # Ollama (local, free) — embeddings + chat fallback when no cloud keys are set
+    # Ollama (local, free) — embeddings, and an OPTIONAL offline chat fallback.
+    # chat_model is EMPTY by default (llama3.2 removed): the cloud Llama 4 API is
+    # the chat model. Set CHAT_MODEL only to keep a local offline fallback.
     ollama_url: str = "http://localhost:11434"
-    chat_model: str = "llama3.2:3b"
+    chat_model: str = ""
     embed_model: str = "nomic-embed-text"
 
     # Google Gemini (cloud) — embeddings (768-dim, Matryoshka-truncated). Optional.
@@ -49,15 +51,51 @@ class Settings(BaseSettings):
     gemini_embed_model: str = "gemini-embedding-001"
     gemini_url: str = "https://generativelanguage.googleapis.com/v1beta"
 
-    # Groq (cloud, free tier) — chat only. If a key is set, chat uses Groq.
+    # --- Cloud chat: OpenAI-compatible providers, tried in order --------------
+    # PRIMARY: Llama 4 via OpenRouter (OpenAI-compatible), so the same chat code
+    # works; only base URL + key + model differ. Free key at https://openrouter.ai .
+    # (Swap URL + model for any other OpenAI-compatible Llama 4 host if you prefer.)
+    llama_api_key: str = ""
+    llama_api_url: str = "https://openrouter.ai/api/v1"
+    llama_model: str = "meta-llama/llama-4-maverick"
+    # Fallback Llama models (comma-list), tried when the primary is rate-limited.
+    llama_fallback_models: str = "meta-llama/llama-4-scout"
+
+    # SECONDARY (optional): Groq — a cross-provider safety net using NON-Llama
+    # models (OpenAI gpt-oss), each with its own free daily budget, so chat still
+    # answers if the Llama API is rate-limited. Leave GROQ_API_KEY blank to skip.
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
-    # Extra Groq models to try (in order) when the primary is rate-limited. Each has
-    # its OWN free-tier daily budget, so the app keeps working when one model's daily
-    # cap is used up - vital in the cloud, which has no local fallback. Comma-list.
-    groq_fallback_models: str = ("llama-3.1-8b-instant,openai/gpt-oss-120b,"
-                                 "openai/gpt-oss-20b")
     groq_url: str = "https://api.groq.com/openai/v1"
+    groq_fallback_models: str = "openai/gpt-oss-120b,openai/gpt-oss-20b"
+
+    # --- MCP transport ------------------------------------------------------
+    # stdio (default) needs none of this: the client owns the process, so it is
+    # already as trusted as the user. The HTTP transport is a public endpoint,
+    # so it requires a shared bearer token — the server refuses to start in HTTP
+    # mode without one rather than silently exposing the corpus.
+    mcp_auth_token: str = ""
+    mcp_host: str = "127.0.0.1"          # 0.0.0.0 when hosted
+    mcp_port: int = 8000                 # hosts inject $PORT; see main()
+    mcp_path: str = "/mcp"
+    # Host headers to accept (DNS-rebinding protection). Comma-separated. Render
+    # injects RENDER_EXTERNAL_HOSTNAME, which is added automatically below.
+    mcp_allowed_hosts: str = ""
+    render_external_hostname: str = ""   # set by Render; unused elsewhere
+
+    @property
+    def allowed_hosts(self) -> list[str]:
+        """Host headers the HTTP transport will accept.
+
+        The SDK rejects every Host unless it is listed, so a hosted deployment
+        MUST include its public hostname or every request 421s.
+        """
+        hosts = [h.strip() for h in self.mcp_allowed_hosts.split(",") if h.strip()]
+        if self.render_external_hostname:
+            hosts.append(self.render_external_hostname)
+        if not hosts:
+            hosts = ["localhost", "127.0.0.1",
+                     f"localhost:{self.mcp_port}", f"127.0.0.1:{self.mcp_port}"]
+        return hosts
 
     # RAG params
     chunk_tokens: int = 500
@@ -75,22 +113,37 @@ class Settings(BaseSettings):
     rerank_candidates: int = 24     # fused hits pulled, then reranked down to top_k
 
     @property
+    def chat_endpoints(self) -> list[dict]:
+        """OpenAI-compatible chat endpoints to try in order: the Llama API first
+        (Llama 4), then Groq's non-Llama backup models. Each entry carries its own
+        base URL + key + model, so one chat() loop can span both providers."""
+        eps: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(provider: str, url: str, key: str, model: str) -> None:
+            model = model.strip()
+            if model and (provider, model) not in seen:
+                seen.add((provider, model))
+                eps.append({"provider": provider, "url": url, "key": key,
+                            "model": model})
+
+        if self.llama_api_key.strip():
+            for m in [self.llama_model, *self.llama_fallback_models.split(",")]:
+                add("llama", self.llama_api_url, self.llama_api_key, m)
+        if self.groq_api_key.strip():
+            for m in self.groq_fallback_models.split(","):
+                add("groq", self.groq_url, self.groq_api_key, m)
+        return eps
+
+    @property
     def chat_provider(self) -> str:
-        return "groq" if self.groq_api_key.strip() else "ollama"
+        # "api" = at least one cloud endpoint (Llama API and/or Groq backup).
+        return "api" if self.chat_endpoints else "ollama"
 
     @property
     def active_chat_model(self) -> str:
-        return self.groq_model if self.chat_provider == "groq" else self.chat_model
-
-    @property
-    def groq_chain(self) -> list[str]:
-        """Primary Groq model + fallbacks, in order, de-duplicated."""
-        chain: list[str] = []
-        for m in [self.groq_model, *self.groq_fallback_models.split(",")]:
-            m = m.strip()
-            if m and m not in chain:
-                chain.append(m)
-        return chain
+        eps = self.chat_endpoints
+        return eps[0]["model"] if eps else (self.chat_model or "(none)")
 
     @property
     def embed_dim(self) -> int:

@@ -1,65 +1,68 @@
-# Deploy the Tender RAG app for FREE (beginner guide)
+# Running & deploying the Tender RAG MCP server
 
-This puts your chatbot online at a public URL, using only free services. No credit
-card, no servers to manage.
+The server speaks two transports. Pick by who needs to reach it.
 
-## The free stack
-
-| Piece | Free service | What it does |
+| | **stdio** (default) | **streamable HTTP** (`--http`) |
 |---|---|---|
-| **App** | **Render** (free web service) | runs the FastAPI app + chat page |
-| **Database** | **Neon** (free Postgres + pgvector) | stores tenders + the "meaning numbers" |
-| **Embeddings** | **built into the app** (fastembed) | turns text into vectors — in-process, no API |
-| **Answers** | **Groq** (free API) | writes the chat answers |
+| Runs | on your PC, launched by your assistant | on a host, always on |
+| Address | none — a child process | `https://<service>.onrender.com/mcp` |
+| Auth | none needed (the client owns the process) | **bearer token, required** |
+| Scraping | works (`fetch_tender`) | off — no scraper binaries on the host |
+| Best for | daily local use | testing online, sharing with others |
 
-**Why embeddings are built-in:** running them as a cloud API hit free-tier daily
-caps, and running Ollama needs too much memory for a free host. So the app now makes
-its own embeddings **inside the process** using a small ONNX model (`bge-small`,
-384-dim). That means **no embedding API, no key, no quotas** — it just works.
+Start with **Part 1** if you just want it working. **Part 2** puts it online.
 
-```mermaid
-flowchart LR
-  U[Anyone with the link] --> R[Render<br/>FastAPI app + built-in embeddings]
-  R --> N[(Neon<br/>Postgres + pgvector)]
-  R --> Q[Groq API<br/>answers]
+---
+
+## Part 1 — Local (stdio)
+
+### Claude Code
 ```
+claude mcp add tender-rag -- "c:\anshul\MVP - Copy\tender_rag\.venv\Scripts\python.exe" -m app.mcp_server
+```
+Check it with `claude mcp list`.
 
-**One important limit:** the cloud app is **query-only**. It answers questions about
-the tenders you load into it, but does **not** scrape new ones (scraping needs heavy
-programs that don't fit a free host). To add tenders later, scrape them on your PC
-and re-run the load step.
+### Claude Desktop
+Edit `%APPDATA%\Claude\claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "tender-rag": {
+      "command": "c:\\anshul\\MVP - Copy\\tender_rag\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "c:\\anshul\\MVP - Copy\\tender_rag"
+    }
+  }
+}
+```
+Restart Claude Desktop. The tender tools appear under the tools icon.
+
+**Both need the full path to `.venv\Scripts\python.exe`** — the system Python does
+not have this project's packages. And `cwd` must be the project folder, because
+that is where `.env` is read from.
+
+> Prefer not to rely on `cwd`? Put the settings in the client config's `env` block
+> instead (`POSTGRES_PASSWORD`, `LLAMA_API_KEY`, …); real environment variables win
+> over `.env`.
+
+**Verify:** `.venv\Scripts\python scripts\test_mcp.py`
 
 ---
 
-## Before you start
+## Part 2 — Online, on Render (HTTP)
 
-Free accounts (all free, no card):
-- **Neon** — https://neon.tech (the database)
-- **Groq** — https://console.groq.com (you already have this key)
-- **Render** — https://render.com (the host), plus a **GitHub** account for the code.
-
-There is **no Google/Gemini key needed** anymore.
-
----
-
-## Step 1 — Create the database (Neon)
+### Step 1 — Create the database (Neon)
+Render's free tier has no database, so the corpus lives in a free Neon Postgres.
 
 1. Sign up at https://neon.tech → **New Project** (any name/region).
-2. Open **Dashboard → Connection Details** and copy the **connection string**:
+2. **Dashboard → Connection Details** → copy the connection string:
    ```
    postgresql://neondb_owner:PASSWORD@ep-xxxx.REGION.aws.neon.tech/neondb?sslmode=require
    ```
-   It contains the host, database, user, and password you'll need below.
 
----
-
-## Step 2 — Load your tenders into Neon (from your PC)
-
+### Step 2 — Load your tenders into Neon (from your PC)
 This reads the tenders scraped on your PC and writes them — with the built-in
-embeddings — into Neon. Nothing is re-scraped. Run it in `c:\anshul\MVP\tender_rag`.
-
-Open **PowerShell** and set the values just for this session (does not touch your
-local `.env`):
+embeddings — into Neon. Nothing is re-scraped.
 
 ```powershell
 $env:POSTGRES_HOST     = "ep-xxxx.REGION.aws.neon.tech"   # from your Neon string
@@ -69,40 +72,34 @@ $env:POSTGRES_PASSWORD = "YOUR_NEON_PASSWORD"
 $env:POSTGRES_SSLMODE  = "require"
 $env:EMBED_PROVIDER    = "fastembed"
 
-# create the tables (at the right vector size) and load all tenders
 .venv\Scripts\python scripts\load_data.py --reset
 ```
 
-`--reset` drops any old tables and recreates them, so it's safe to re-run. You should
-see `Loaded: 15 tenders, ... chunks`. (The first run downloads the ~30 MB model once.)
+`--reset` drops any old tables and recreates them, so it's safe to re-run. Expect
+`Loaded: N tenders, ... chunks`. (The first run downloads the ~30 MB model once.)
 
-> Close the PowerShell window afterwards so the values disappear. Your local `.env`
-> is untouched.
+> ⚠️ The cloud uses `fastembed` (384-dim) while your local `.env` may use a
+> 768-dim model. The vector column size must match the model, which is exactly
+> what `--reset` rebuilds. Don't skip it when switching providers.
 
----
+> Close that PowerShell window afterwards so the values disappear — your `.env` is
+> untouched.
 
-## Step 3 — Put the code on GitHub
-
-Render deploys from a Git repo. Push the `tender_rag` folder to a **new, empty**
-GitHub repo (so the `Dockerfile` is at the repo root):
+### Step 3 — Push to GitHub
+Render deploys from a Git repo. Push this folder to a **new, empty** repo so the
+`Dockerfile` sits at the repo root:
 
 ```powershell
-cd c:\anshul\MVP\tender_rag
+cd "c:\anshul\MVP - Copy\tender_rag"
 git add -A
-git commit -m "deploy: in-process embeddings"
-# create an EMPTY repo at https://github.com/new (no README), then:
-git remote add origin https://github.com/<you>/tender-rag.git   # skip if already added
+git commit -m "MCP server over HTTP"
+git remote add origin https://github.com/<you>/tender-rag.git   # skip if set
 git push -u origin main
 ```
+Your `.env` is git-ignored, so no secrets are uploaded.
 
-The first push pops up a **GitHub sign-in** — complete it. Your `.env` is git-ignored,
-so no secrets are uploaded.
-
----
-
-## Step 4 — Deploy on Render
-
-1. https://render.com → **New → Blueprint** → connect GitHub → pick your repo.
+### Step 4 — Deploy
+1. https://render.com → **New → Blueprint** → connect GitHub → pick the repo.
    Render reads `render.yaml` and creates a free web service.
 2. Fill the **secret** values it asks for:
 
@@ -112,45 +109,97 @@ so no secrets are uploaded.
    | `POSTGRES_DB` | `neondb` |
    | `POSTGRES_USER` | your Neon user |
    | `POSTGRES_PASSWORD` | your Neon password |
-   | `GROQ_API_KEY` | your Groq key (`gsk_...`) |
+   | `LLAMA_API_KEY` | your OpenRouter key |
+   | `GROQ_API_KEY` | *(optional backup)* |
 
-   The rest (`POSTGRES_SSLMODE=require`, `EMBED_PROVIDER=fastembed`,
-   `ENABLE_SCRAPING=false`, `GROQ_MODEL`, `TOP_K`) are already set by `render.yaml`.
-3. **Apply / Create.** First build ~4–6 min (it bakes the embedding model in).
+   `MCP_AUTH_TOKEN` is **generated for you** by Render (`generateValue: true`).
+   Everything else is already set by `render.yaml`.
+3. **Apply.** First build ~4–6 min (it bakes the embedding model into the image).
 
-**Manual alternative:** New → **Web Service** → connect repo → it detects the
-`Dockerfile` → set the same env vars by hand → Create.
+### Step 5 — Get your token and test
+1. Render dashboard → your service → **Environment** → copy `MCP_AUTH_TOKEN`.
+2. Liveness (no auth needed):
+   ```
+   curl https://<service>.onrender.com/healthz
+   → {"status":"alive","server":"tender-rag"}
+   ```
+3. Auth is enforced — this must return **401**:
+   ```
+   curl -X POST https://<service>.onrender.com/mcp
+   ```
+4. Point a client at it:
+   ```json
+   {
+     "mcpServers": {
+       "tender-rag": {
+         "type": "http",
+         "url": "https://<service>.onrender.com/mcp",
+         "headers": { "Authorization": "Bearer <MCP_AUTH_TOKEN>" }
+       }
+     }
+   }
+   ```
+   Or with the CLI:
+   ```
+   claude mcp add --transport http tender-rag-cloud https://<service>.onrender.com/mcp \
+     --header "Authorization: Bearer <MCP_AUTH_TOKEN>"
+   ```
+
+### What the free tier costs you
+- **Sleeps after 15 min idle**, ~1 min to wake. The first call after a nap may time
+  out in the client — call it again.
+- **512 MB RAM**, so `USE_RERANKER=false` (already set). Hybrid search still runs;
+  answers are slightly less precisely ranked.
+- **Query-only.** `fetch_tender` can't scrape there. To add tenders: scrape on your
+  PC, re-run Step 2.
 
 ---
 
-## Step 5 — Try it
+## Part 3 — Docker (either transport)
 
-1. Render gives a URL like `https://tender-rag.onrender.com`.
-2. `https://<app>/health` → expect `"status": "ok"`, `embed_provider: fastembed`,
-   `chat_provider: groq`, `pgvector: ok`.
-3. `https://<app>/` → the chat page. Ask e.g. Source `zppa`, Tender ID `28231539`,
-   *"What is the closing date?"*
+```
+docker build -t tender-rag .
 
-Share the link — it's live.
+# stdio — note -i, the container IS the server
+docker run -i --rm --env-file .env tender-rag
+
+# HTTP
+docker run -p 8000:8000 --env-file .env -e MCP_AUTH_TOKEN=<token> tender-rag \
+  python -m app.mcp_server --http --host 0.0.0.0
+```
 
 ---
 
-## Good to know (free-tier behaviour)
+## Security notes for the HTTP transport
 
-- **First request is slow (~30–60s), then fast.** Render's free service sleeps after
-  15 min idle and takes ~a minute to wake.
-- **No scraping in the cloud** (by design). To add tenders: scrape on your PC, then
-  re-run **Step 2** (safe to repeat).
-- **Free limits:** Neon free = 0.5 GB (your data is tiny). Groq free tier is generous
-  for one-at-a-time use; the app already retries / falls back on Groq rate limits.
-  Embeddings are in-process, so they have **no limit at all**.
-- **Secrets** live only in Render's env settings + your local shell — never in the code.
+- **The token is the only thing between the internet and your corpus.** Anyone
+  holding it can call every tool, including `ingest_all_tenders` (heavy CPU + LLM
+  use). Treat it like a password; rotate it in Render's dashboard if it leaks.
+- **The server refuses to start in HTTP mode without `MCP_AUTH_TOKEN`** — there is
+  no "just this once" unauthenticated mode.
+- **`/healthz` is deliberately unauthenticated** (hosts must probe it) and returns
+  nothing but a liveness flag. `health_check`, which does expose configuration, is
+  an authenticated MCP tool.
+- **DNS-rebinding protection** rejects unknown `Host` headers with `421`. Render's
+  hostname is trusted automatically via `RENDER_EXTERNAL_HOSTNAME`; on any other
+  host set `MCP_ALLOWED_HOSTS=your.domain.com`.
+- **Sessions are stateless by default**, so a free-tier restart can't orphan a
+  client with a dead session id. Pass `--stateful` to opt out.
 
 ## If something's wrong
 
-- `/health` → `postgres: error` → check the Neon values and `POSTGRES_SSLMODE=require`.
-- `/health` → `groq_key: MISSING` → set `GROQ_API_KEY` on Render and redeploy.
-- `embed_model: error` → the model didn't load; usually a transient first-boot issue —
-  redeploy. (The image bakes the model in, so this is rare.)
-- A question says *"not loaded on this server"* → that tender isn't in Neon; run
-  Step 2, or omit the Tender ID to search all loaded tenders.
+- **Server missing from the client (stdio).** Check the command path points at
+  `.venv\Scripts\python.exe`, not a system Python. Claude Desktop logs:
+  `%APPDATA%\Claude\logs\`.
+- **Everything returns 401.** The header must be exactly
+  `Authorization: Bearer <token>` and the token must match Render's env value.
+- **`421 Misdirected Request`.** The `Host` header isn't in the allowlist — set
+  `MCP_ALLOWED_HOSTS`.
+- **`postgres: error`** → check the values and, for Neon, `POSTGRES_SSLMODE=require`.
+- **`llama_api_key: not set`** → set it and redeploy / restart the client.
+- **Dimension mismatch after switching embedding providers** → re-run
+  `scripts/load_data.py --reset`.
+- **"tender … is not loaded"** → it isn't in that database. Load it, or ask across
+  everything with `ask_all_tenders`.
+- **Protocol errors on stdio.** Something wrote to **stdout**, corrupting JSON-RPC.
+  All logging goes to stderr — keep it that way, and never add a bare `print()`.

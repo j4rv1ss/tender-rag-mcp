@@ -17,4 +17,3 @@ docs/
 *.md
 Dockerfile
 .dockerignore
-render.yaml

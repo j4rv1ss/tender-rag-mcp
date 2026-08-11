@@ -27,7 +27,8 @@ class EmbeddingError(RuntimeError):
 
 # One PERSISTENT client per provider, reused across calls. A fresh connection makes
 # the first request on it costly (Ollama ~2.5s cold; TLS handshake for Gemini);
-# reusing it keeps each embed fast. httpx.Client is safe across FastAPI's threadpool.
+# reusing it keeps each embed fast. httpx.Client is thread-safe, which is what the
+# MCP server needs: sync tools run in anyio's worker threadpool.
 _OLLAMA: httpx.Client | None = None
 _GEMINI: httpx.Client | None = None
 

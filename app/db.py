@@ -25,7 +25,11 @@ class Base(DeclarativeBase):
 
 
 def get_db() -> Iterator[Session]:
-    """FastAPI dependency: a scoped session per request."""
+    """A scoped session per unit of work (used by scripts/).
+
+    The MCP server has its own wrapper in app.mcp_server._db, which adds the
+    domain-error -> ToolError mapping on top of this.
+    """
     db = SessionLocal()
     try:
         yield db

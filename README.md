@@ -1,8 +1,10 @@
-# Tender RAG — a chatbot that answers questions about tenders
+# Tender RAG — an MCP server that answers questions about tenders
 
-This is a small AI app. You ask a question about a government **tender** (a public
-contract offer), and it gives you an answer **based on that tender's real
-documents** — with references to the exact document and page it came from.
+This is a small AI app, exposed as an **MCP server** so any AI assistant (Claude
+Desktop, Claude Code, …) can use it as a tool. You ask a question about a
+government **tender** (a public contract offer), and it gives you an answer
+**based on that tender's real documents** — with references to the exact document
+and page it came from.
 
 It is built on top of the tender **scrapers** in `c:\anshul\MVP` (separate
 programs that download tenders and their files from 9 government websites).
@@ -20,7 +22,7 @@ Example:
 A tender comes with long PDF/Word documents (sometimes 100+ pages). Reading them
 to find one fact — the closing date, who to contact, what documents you must
 submit — is slow. This app reads the documents for you and answers questions in
-about **half a second**, and it **shows its sources** so you can trust the answer.
+a **few seconds**, and it **shows its sources** so you can trust the answer.
 
 Very important: it only answers from the **actual documents**. If the answer is
 not in the documents, it says *"not available"* instead of making something up.
@@ -48,7 +50,8 @@ To do this it uses three ideas. Here they are in plain English:
   and quickly find the ones **closest in meaning** to your question. (Like
   finding the nearest coffee shops to your location — but for meaning.)
 - **LLM (Large Language Model)** = the "brain" that reads the found paragraphs
-  and writes a human answer. Here we use **Groq** (a fast, free cloud AI service).
+  and writes a human answer. Here we use **Llama 4** (Meta's latest open model),
+  reached over the cloud through **LangChain**.
 
 Putting it together — this pattern is called **RAG** (Retrieval-Augmented
 Generation): *Retrieve* the relevant text, then *Generate* an answer from it.
@@ -63,7 +66,7 @@ turn question into numbers (embedding)        ← in-process, free (fastembed)
 find the closest paragraphs (pgvector search) ← PostgreSQL
    │
    ▼
-give those paragraphs + your question to the AI (Groq)
+give those paragraphs + your question to the AI (Llama 4, via LangChain)
    │
    ▼
 Answer + references (which document, which page)
@@ -78,19 +81,31 @@ Answer + references (which document, which page)
 | **PostgreSQL** | a normal database | stores the tender info and the document text |
 | **pgvector** | an add-on for PostgreSQL | stores the "meaning numbers" and finds similar ones |
 | **fastembed** | a small AI model that runs **inside the app** (free, offline) | makes the "meaning numbers" (embeddings) — no separate service, no API, no limits |
-| **Groq** | a **cloud** AI service (free tier) | writes the actual answers, very fast |
-| **FastAPI** | a web-server toolkit | provides the chat page and the API |
+| **Llama 4** | Meta's latest LLM, reached over the cloud (OpenRouter, free key) | writes the actual answers |
+| **LangChain** | a library for talking to LLMs | drives the Llama 4 call — and any OpenAI-compatible model — with automatic retries + provider fallback |
+| **MCP** | Model Context Protocol — the standard way an AI assistant plugs into an external tool | exposes the whole system as **tools** an assistant (Claude Desktop, Claude Code, …) can call directly |
 | **SQLAlchemy** | talks to the database from Python | reads/writes tenders, documents, chunks |
+
+**Why MCP instead of a website?** Previously this ran as a web app you opened in a
+browser. Now it is an **MCP server**: instead of you typing into a chat page, your
+AI assistant calls the tender tools itself. That means you can ask *"is the Rand
+Water cathodic-protection tender worth bidding for?"* in a normal conversation, and
+the assistant will look it up in this system, read the real documents, and answer —
+mixing it freely with everything else it can do. There is no web page and no HTTP
+API any more; the assistant **is** the interface.
 
 **Why is the "meaning numbers" part built into the app?**
 Making embeddings in-process (with a small model called `bge-small`, 384 numbers
 each) means there is **no extra service to run, no API key, and no daily limit** —
 it just works, on your PC and in the cloud. The documents never leave the app.
 
-**Why Groq for the answers?** Groq is fast and free. If Groq is ever busy or its
-free limit is reached, the app automatically tries a **smaller Groq model**, and
-as a last resort a **local model** (Ollama, if you have it) — so you always get an
-answer. (Ollama is optional — only needed if you want a fully offline fallback.)
+**Why Llama 4, and why via LangChain?** Llama 4 is a strong, current open model,
+and LangChain lets the app talk to it — or any OpenAI-compatible model — through
+one tidy interface. The app tries models **in order**: **Llama 4 Maverick → Llama 4
+Scout** (both on OpenRouter), then, if those are rate-limited, a **backup model on
+Groq** (OpenAI `gpt-oss`), and only as a last resort a **local model** (Ollama, if
+you configure one) — so you always get an answer. Switching provider is just a new
+URL + key + model name in `.env`; no code changes.
 
 **Why not just ask ChatGPT/an LLM directly?** Because a plain LLM doesn't know
 your specific tender's documents, and it can make things up. RAG forces the
@@ -117,7 +132,8 @@ answer to come from the real documents and cite them.
 - **Python 3.12**, with this project's packages installed in `tender_rag/.venv`
   (the embedding model, **fastembed**, is one of those packages — nothing extra to
   install or run).
-- A free **Groq API key** (in the `.env` file) for fast answers.
+- A free **OpenRouter API key** (in the `.env` file) so the app can reach **Llama 4**.
+  An optional **Groq** key adds a backup model.
 - **Ollama is optional** — only if you want an offline chat fallback when there's
   no internet. Embeddings do **not** need it.
 
@@ -142,40 +158,66 @@ If you ever set this up from zero, see **Section 10 (Full setup)** below.
 ### 6b. Answering a question
 1. Your question is turned into an embedding (in-process).
 2. pgvector finds the **top 8 most-similar chunks**.
-3. Those chunks + the tender's basic info + your question are sent to **Groq**.
-4. Groq writes a short, well-formatted answer and cites the document + page.
+3. Those chunks + the tender's basic info + your question are sent to **Llama 4**
+   (through LangChain).
+4. Llama 4 writes a short, well-formatted answer and cites the document + page.
 
 ---
 
 ## 7. How to use it (the fun part)
 
-The app runs at **http://localhost:8000**.
+You don't start a website. You **connect the server to an AI assistant once**, and
+from then on you just talk to the assistant normally.
 
-### Easiest: the chat page
-1. Open **http://localhost:8000/** in your browser.
-2. **Ask about ONE tender:** fill **Source** and **Tender ID**, type a question,
-   click **Ask**.
-   - Source: `ppadb` · Tender ID: `PR/PPADB/055`
-   - Question: *"What is this tender for and what is the closing date?"*
-   - ⚠️ Copy the Tender ID **exactly**, including any `/` slashes and spaces.
-3. **Ask about ALL loaded tenders at once:** clear the **Tender ID** box, type a
-   question, click **Ask**.
-   - *"Which tenders involve construction work?"*
+### Connect it (one time)
 
-Answers come back in about **half a second**.
+**Claude Code** — from this folder:
+```
+claude mcp add tender-rag -- "c:\anshul\MVP - Copy\tender_rag\.venv\Scripts\python.exe" -m app.mcp_server
+```
+
+**Claude Desktop** — edit
+`%APPDATA%\Claude\claude_desktop_config.json` and add:
+```json
+{
+  "mcpServers": {
+    "tender-rag": {
+      "command": "c:\\anshul\\MVP - Copy\\tender_rag\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "c:\\anshul\\MVP - Copy\\tender_rag"
+    }
+  }
+}
+```
+Then restart Claude Desktop. A tools icon appears — the tender tools are in it.
+
+> The `cwd` matters: the server reads `.env` from the project folder.
+
+### Then just ask
+- *"What is this tender for and when does it close?"* → the assistant calls
+  `ask_tender` (give it the source + tender ID, e.g. `ppadb` / `PR/PPADB/055`).
+- *"Which tenders involve construction work?"* → `ask_all_tenders`, across everything loaded.
+- *"Give me a full brief on the Rand Water cathodic protection tender."* → `summarize_tender`.
+- *"What tenders do we have?"* → `list_tenders`.
+
+⚠️ Copy a Tender ID **exactly**, including any `/` slashes and spaces.
+
+Answers come back in a **few seconds**, and always cite the document + page.
 
 ### Which tenders are loaded?
-Open **http://localhost:8000/tenders** (or the API) to see the current list — it
-changes as you ingest or clear tenders. The scrapers cover 9 portals: `etenders`,
-`transnet`, `sadc`, `zppa`, `ppadb`, `randwater`, `capetown`, `cpbn`, `nra`.
+Ask the assistant *"list the loaded tenders"* (the `list_tenders` tool). It takes an
+optional search filter, e.g. *"list tenders from Rand Water"*. The scrapers cover 9
+portals: `etenders`, `transnet`, `sadc`, `zppa`, `ppadb`, `randwater`, `capetown`,
+`cpbn`, `nra`.
 
 ### Asking about a tender that isn't loaded yet (local only)
 On your PC, you don't need to load it first — **just ask** with its source + ID and
 the app will **run the scraper, load it, then answer** (the first time is slower
 because it has to download it). Works for 8 of the 9 sites; **nra** needs a human
 check, so load that one by hand.
-*(In the cloud this auto-scrape is turned off — the cloud app only answers tenders
-that were already loaded. See DEPLOY.md.)*
+*(Set `ENABLE_SCRAPING=false` to turn auto-scrape off — e.g. when the server runs
+somewhere without the scraper programs. It then answers only tenders already
+loaded. See DEPLOY.md.)*
 
 ### Good questions to try
 - *"What is the published date?"* vs *"What is the closing date?"* (different dates)
@@ -186,38 +228,38 @@ that were already loaded. See DEPLOY.md.)*
 
 ---
 
-## 8. The API (for developers / Swagger)
+## 8. The MCP tools (for developers)
 
-Interactive docs: **http://localhost:8000/docs** (try any endpoint in the browser).
+The assistant picks these automatically from their descriptions — you rarely name
+them yourself. Every tool is a thin wrapper over `app/services`, so the RAG
+pipeline is identical to the old HTTP version.
 
-| Method | Address | What it does |
+| Tool | What it does | Was |
 |---|---|---|
-| GET  | `/health` | check everything is working (database, pgvector, embeddings, Groq) |
-| POST | `/chat` | ask a question (one tender, or all tenders) |
-| POST | `/fetch` | load a specific tender now (scrape + ingest) — local only |
-| POST | `/ingest` | load a tender that's already scraped to disk |
-| POST | `/ingest-all` | load every tender that's been scraped |
-| GET  | `/tenders` | list all loaded tenders |
-| GET  | `/tenders/{id}?source=` | details of one tender |
-| GET  | `/` | the chat page |
+| `ask_tender` | ask about ONE tender, grounded in its documents | `POST /chat` (with id) |
+| `ask_all_tenders` | ask across EVERY loaded tender, attributing each finding | `POST /chat` (no id) |
+| `summarize_tender` | full brief: scope, dates, fees, eligibility, documents | `POST /summary` |
+| `list_tenders` | list loaded tenders (optional filter + limit) | `GET /tenders` |
+| `get_tender` | full stored metadata for one tender | `GET /tenders/{id}` |
+| `ingest_tender` | index a tender already scraped to disk | `POST /ingest` |
+| `fetch_tender` | scrape a tender from its portal now, then index it — local only | `POST /fetch` |
+| `ingest_all_tenders` | index every scraped tender found on disk | `POST /ingest-all` |
+| `health_check` | database, pgvector, embeddings and chat provider status | `GET /health` |
 
-**Ask one tender:**
-```json
-POST /chat
-{ "source": "ppadb", "tender_id": "PR/PPADB/055",
-  "question": "What is the closing date?" }
+It also exposes:
+- **Resources** — `tender://catalogue` (everything loaded) and
+  `tender://{source}/{tender_id}` (one tender's record), for clients that browse
+  context rather than call tools.
+- **A prompt** — `bid_assessment`, a ready-made "should we bid on this?" workflow.
+
+**Reading the answer.** The question-answering tools return markdown: the answer,
+then a **Sources** section listing document, page and relevance score. The
+catalogue/ingest tools return structured JSON as well, so scripts can consume them.
+
+**Inspect it by hand** with the MCP Inspector (a browser UI for calling tools
+directly — needs Node.js installed, since it runs via `npx`):
 ```
-**Ask all loaded tenders** (leave out source/tender_id):
-```json
-POST /chat
-{ "question": "Which tenders involve construction?" }
-```
-**Answer looks like:**
-```json
-{ "mode": "tender",
-  "answer": "The closing date is 28 August 2026 at 12:00 pm ...",
-  "references": [ { "document": "cover page.pdf", "page": 1, "score": 0.71 } ],
-  "chunks_used": 8 }
+.venv\Scripts\mcp dev app\mcp_server.py
 ```
 
 ---
@@ -227,32 +269,34 @@ POST /chat
 ```
 tender_rag/
   app/
-    main.py            the web app (starts everything)
+    mcp_server.py      the MCP server — every tool, resource and prompt
     config.py          settings (read from the .env file)
     db.py              connects to PostgreSQL
     models.py          the 3 tables: Tender, Document, Chunk
-    schemas.py         shapes of the requests/replies
-    routers/           the API endpoints (health, chat, ingest, tenders)
+    schemas.py         shapes of the tool inputs/outputs
     services/
       normalize.py     the 9 mappers (one per website)
       ingest_service.py loads tenders; also auto-fetches missing ones (local)
       scrape.py        runs a website's scraper on demand (local)
       chunking.py      splits documents into chunks
       embeddings.py    makes embeddings in-process (fastembed); Ollama/Gemini optional
-      llm.py           gets answers from Groq (3-tier: 70b -> 8b -> local Ollama)
+      llm.py           answers via LangChain over a chat chain
+                       (Llama 4 Maverick -> Scout on OpenRouter -> Groq gpt-oss backup -> optional local)
       retriever.py     the pgvector "find similar chunks" search
       prompts.py       the instructions given to the AI (synonyms, formatting, citing)
       rag.py           ties retrieve + answer together
-    static/index.html  the chat web page
+      health.py        checks database / pgvector / providers; warms the models
   db/init.sql          creates the database tables (embedding VECTOR(384))
-  scripts/             setup + loading helper scripts (load_data.py for the cloud)
+  scripts/             setup + loading helper scripts (load_data.py for a cloud DB)
   docs/architecture.md pictures/diagrams of the system
-  Dockerfile           builds the app image for free cloud hosting
-  render.yaml          one-click deploy config for Render
-  DEPLOY.md            step-by-step free deploy (Render + Neon)
+  Dockerfile           builds a container that serves the MCP server over stdio
+  DEPLOY.md            connecting clients + using a hosted Postgres
   .env                 your settings + secret keys (keep private!)
   requirements.txt     the Python packages needed
 ```
+
+*(The old `main.py`, `routers/` and `static/index.html` are gone — they were the
+FastAPI HTTP layer that `mcp_server.py` replaces. `services/` is untouched.)*
 
 ---
 
@@ -270,56 +314,81 @@ Only needed if setting up somewhere new — this PC is already done.
    ```
 4. **Settings:** copy `.env.example` to `.env`. Fill in:
    - `POSTGRES_PASSWORD` — your database password.
-   - `GROQ_API_KEY` — a free key from https://console.groq.com (for fast answers).
+   - `LLAMA_API_KEY` — a free key from https://openrouter.ai (chat = Llama 4).
+   - *(optional)* `GROQ_API_KEY` — a free key from https://console.groq.com (backup model).
    - `EMBED_PROVIDER=fastembed` (the default in-process embeddings).
 5. **Create the database + tables:**
    `powershell -ExecutionPolicy Bypass -File scripts\setup_db.ps1`
 6. **Load some tenders:** `.venv\Scripts\python scripts\ingest_all.py`
 
 *(Optional: install Ollama only if you want an offline chat fallback —
-`winget install Ollama.Ollama` then `ollama pull llama3.2:3b`.)*
+`winget install Ollama.Ollama`, pull a small chat model, and set `CHAT_MODEL` in
+`.env`. Not used for embeddings.)*
 
-### Put it online for FREE
-To host the chatbot on the internet at no cost (Render + Neon + Groq), follow the
-step-by-step guide in **[DEPLOY.md](DEPLOY.md)**.
+7. **Connect it to your assistant:** see Section 7.
+
+### Putting it online
+By default the server runs on **your machine** over stdio, launched by your
+assistant. To reach it from anywhere, serve the HTTP transport instead:
+
+```
+.venv\Scripts\python -m app.mcp_server --http
+```
+
+That exposes `/mcp` and **requires** `MCP_AUTH_TOKEN` — it refuses to start
+without one, since the endpoint is public. `render.yaml` deploys it free on
+Render; see **[DEPLOY.md](DEPLOY.md)** for the walkthrough. Hosted means
+query-only (no scraper binaries) and needs a hosted Postgres.
 
 ---
 
-## 11. Start / stop the app
+## 11. Start / stop the server
 
-**Start:**
+**You don't start it yourself.** Once connected (Section 7), your AI assistant
+launches the server when it needs it and shuts it down when it closes — there is no
+window to leave open and no port to remember.
+
+To restart it after changing code or `.env`, restart the assistant (in Claude
+Desktop: quit and reopen).
+
+**Run it by hand** — only useful for debugging; it will just sit waiting for
+JSON-RPC on stdin:
 ```
-cd c:\anshul\MVP\tender_rag
-.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd "c:\anshul\MVP - Copy\tender_rag"
+.venv\Scripts\python -m app.mcp_server
 ```
-Then open http://localhost:8000/. Leave that window open while you use it.
+Press `Ctrl + C` to stop. To poke at the tools interactively, use the Inspector
+(Section 8) instead.
 
-**Stop:** press `Ctrl + C` in that window.
-
-The first question after starting takes a few seconds (the embedding model loads
-once), then every question is fast.
+The first question after a start takes a few seconds (the embedding model loads
+once — the server pre-warms it in the background); after that, most of each
+answer's time is the Llama 4 cloud call (~1–3s).
 
 ---
 
 ## 12. Common questions
 
-- **Do I need internet?** Only for Groq (the answer-writer). The embeddings and the
-  database run on your machine. Remove `GROQ_API_KEY` (and install Ollama) to run
-  fully offline with a local answer model (slower).
-- **Is it free?** Yes. PostgreSQL and the embeddings are free; Groq has a free tier;
-  and the whole thing can be hosted free (see DEPLOY.md).
-- **Does it use my ChatGPT/Claude account?** No. It uses Groq for answers and a small
-  built-in model for embeddings — nothing else.
+- **Do I need internet?** Only for the Llama 4 call (the answer-writer). The
+  embeddings and the database run on your machine. Set a local `CHAT_MODEL` (via
+  Ollama) and drop the cloud keys to run fully offline with a local model (slower).
+- **Is it free?** Yes. PostgreSQL and the embeddings are free; Llama 4 runs on an
+  OpenRouter free key; and the whole thing can be hosted free (see DEPLOY.md).
+- **Does it use my ChatGPT/Claude account?** The *tender answer* is written by
+  **Llama 4** (via OpenRouter, through LangChain), grounded in the documents, with
+  embeddings from a small built-in model. Your assistant (e.g. Claude) only decides
+  *which tool to call* and relays the result — it does not read the documents itself
+  or invent tender facts.
 - **The first question after starting is slow (~a few seconds).** That's the embedding
-  model loading once. After that, questions take about **0.5 seconds**.
+  model loading once. After that, each answer is mostly the Llama 4 cloud call (~1–3s).
 - **Asking about a brand-new tender is slow (local).** The first time, it downloads
   it (scrape). After that it's instant. Large sites can take a few minutes.
 - **It said "not available for this tender".** That's correct behaviour — the fact
   isn't in that tender's documents, so it won't guess.
 - **A Tender ID didn't work.** Copy it **exactly** — many IDs contain `/` slashes
   and spaces (e.g. `RW10414743/25 R`). An underscore instead of a slash won't match.
-- **Where are my secrets?** In `tender_rag/.env` (database password + Groq key).
-  Keep this file private — don't put it in a shared repository.
+- **Where are my secrets?** In `tender_rag/.env` (database password + the Llama 4
+  OpenRouter key, plus the optional Groq backup key). Keep this file private — don't
+  put it in a shared repository.
 
 ---
 
@@ -333,7 +402,11 @@ once), then every question is fast.
 - A tender must still **exist on the website** to be scraped fresh; a closed/removed
   one can't be fetched — you'll get a clear message, not a guess.
 - **nra** can't be auto-downloaded (human-verification check); load it manually.
-- The **cloud version is query-only** — it answers loaded tenders but doesn't scrape.
+- With `ENABLE_SCRAPING=false` the server is **query-only** — it answers loaded
+  tenders but doesn't scrape new ones.
+- **One client at a time.** A stdio MCP server is launched by (and belongs to) the
+  assistant that started it. Two assistants each get their own copy of the process;
+  they share the database, not the server.
 
 ---
 

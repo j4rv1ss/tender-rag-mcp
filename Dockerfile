@@ -1,6 +1,14 @@
-# Tender RAG — app image for free hosting (Render / Fly / etc.).
-# Cloud mode: in-process fastembed embeddings (no Ollama, no embedding API/quota)
-# + Groq (chat) + a managed Postgres. Scraping is done on your PC, not here.
+# Tender RAG — MCP server image. Serves either transport:
+#
+#   stdio (default) — the container IS the server; a client launches it and
+#     speaks JSON-RPC over stdin/stdout, so run it with -i and never print to
+#     stdout:      docker run -i --rm --env-file .env tender-rag
+#   HTTP (hosted)   — override the command; needs MCP_AUTH_TOKEN:
+#     docker run -p 8000:8000 -e MCP_AUTH_TOKEN=... --env-file .env tender-rag \
+#       python -m app.mcp_server --http --host 0.0.0.0
+#
+# Query-only by design: in-process fastembed embeddings + a cloud chat model +
+# a managed Postgres. Scraping needs local binaries, so it stays on your PC.
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -19,7 +27,13 @@ RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BA
 COPY app ./app
 COPY db ./db
 
-# Render/Fly inject $PORT; default to 8000 for a local `docker run`.
+# No scraper binaries here: answers pre-loaded tenders only. Load the corpus
+# from your PC with scripts/load_data.py.
+ENV ENABLE_SCRAPING=false
+
+# Only used in HTTP mode; hosts inject their own $PORT, which main() prefers.
 ENV PORT=8000
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+
+# stdio by default — render.yaml overrides this with the --http command.
+CMD ["python", "-m", "app.mcp_server"]

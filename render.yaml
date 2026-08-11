@@ -1,6 +1,7 @@
-# Render Blueprint — deploy the Tender RAG app as a FREE Docker web service.
-# Secrets (DB password, API keys) are entered in the Render dashboard (sync: false);
-# non-secret values are set here. See DEPLOY.md for the full walkthrough.
+# Render Blueprint — the Tender RAG MCP server over streamable HTTP.
+# Endpoint: https://<service>.onrender.com/mcp   (bearer token required)
+# Secrets are entered in the Render dashboard (sync: false); the rest is set here.
+# See DEPLOY.md for the full walkthrough.
 services:
   - type: web
     name: tender-rag
@@ -8,8 +9,17 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /health
+    # /mcp only answers authenticated POSTs, so probe the open liveness route.
+    healthCheckPath: /healthz
+    dockerCommand: python -m app.mcp_server --http --host 0.0.0.0
     envVars:
+      # --- MCP auth: REQUIRED. The server refuses to start in HTTP mode without
+      # it. Use Render's "Generate" button to create a strong value. ---
+      - key: MCP_AUTH_TOKEN
+        generateValue: true
+      # DNS-rebinding protection rejects any Host it doesn't know. Render injects
+      # RENDER_EXTERNAL_HOSTNAME and config.py trusts it, so this needs nothing.
+
       # --- Neon Postgres (secrets: fill in the dashboard) ---
       - key: POSTGRES_HOST        # <your-project>.neon.tech
         sync: false
@@ -30,12 +40,19 @@ services:
       # "true" if you move to a larger instance.
       - key: USE_RERANKER
         value: "false"
-      # --- chat: Groq (secret: fill in the dashboard) ---
+      # --- chat: Llama 4 via OpenRouter (secret: fill in the dashboard) ---
+      - key: LLAMA_API_KEY        # openrouter.ai → Keys
+        sync: false
+      - key: LLAMA_API_URL
+        value: https://openrouter.ai/api/v1
+      - key: LLAMA_MODEL
+        value: meta-llama/llama-4-maverick
+      - key: LLAMA_FALLBACK_MODELS
+        value: meta-llama/llama-4-scout
+      # optional cross-provider backup (non-Llama gpt-oss); leave unset to skip
       - key: GROQ_API_KEY         # console.groq.com
         sync: false
-      - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
-      # --- cloud is query-only (no local scrapers) ---
+      # --- no scraper binaries on the host: query pre-loaded tenders only ---
       - key: ENABLE_SCRAPING
         value: "false"
       - key: TOP_K

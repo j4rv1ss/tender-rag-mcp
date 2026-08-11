@@ -22,41 +22,48 @@ flowchart LR
   subgraph SC[Scrapers - separate programs]
     OUT[Tender files on disk<br/>tender_*.json + document text]
   end
-  subgraph APP[Tender RAG app - FastAPI]
-    API[Web API + Chat page]
+  CLIENT[AI assistant<br/>Claude Desktop / Claude Code]
+  subgraph APP[Tender RAG - MCP server, stdio]
+    API[MCP tools<br/>ask, summarize, list, ingest]
     SCR[Scrape service<br/>fetch a missing tender - local only]
     ING[Loader<br/>map, split, embed]
     RAGS[Answer engine]
     EMB[fastembed<br/>in-process embeddings]
+    LC[LangChain<br/>chat client]
   end
   DB[(PostgreSQL<br/>+ pgvector)]
-  GROQ[Groq - cloud<br/>writes the answer]
+  LLM[Llama 4 - cloud<br/>OpenRouter, writes the answer]
 
   OUT --> ING
+  CLIENT -->|JSON-RPC over stdio| API
   API --> SCR --> ING
   ING --> EMB
   ING --> DB
   API --> RAGS
   RAGS --> EMB
   RAGS --> DB
-  RAGS --> GROQ
+  RAGS --> LC --> LLM
 ```
 
 **In words:**
+- Your **AI assistant** launches this server as a child process and calls its
+  **MCP tools** over stdin/stdout. There is no web server and no port — the
+  assistant is the user interface.
 - The **scrapers** (separate programs) download tenders from 9 websites and save
   them as files.
 - The **Loader** reads those files, splits the documents into small pieces, uses
   the **built-in fastembed model** to turn each piece into meaning-numbers, and
   stores everything in **PostgreSQL + pgvector**.
 - When you ask a question, the **Answer engine** embeds your question (again with
-  fastembed), finds the closest pieces in the database, and asks **Groq** (fast
-  cloud AI) to write the answer.
+  fastembed), finds the closest pieces in the database, and — through **LangChain** —
+  asks **Llama 4** (on OpenRouter) to write the answer.
 - If you ask about a tender that isn't loaded, the **Scrape service** runs the
-  right website's scraper first, then loads it. *(This is local only; the cloud
-  version is query-only.)*
+  right website's scraper first, then loads it. *(Local only — set
+  `ENABLE_SCRAPING=false` where the scraper binaries aren't installed, making the
+  server query-only.)*
 
 The embeddings run **inside the app** (no separate service, no API key, no limits).
-Only the answer-writer (**Groq**) is a cloud call.
+Only the answer-writer (**Llama 4**, called via LangChain) is a cloud call.
 
 ---
 
@@ -123,8 +130,8 @@ them exactly as written; the AI reformats them nicely when it answers.
 
 ```mermaid
 sequenceDiagram
-  actor U as Caller
-  participant API as /ingest
+  actor U as AI assistant
+  participant API as ingest_tender (MCP tool)
   participant N as Mapper
   participant DB as PostgreSQL
   participant CH as Splitter
@@ -157,12 +164,13 @@ data, so you never get duplicates.
 
 ```mermaid
 sequenceDiagram
-  actor U as You
-  participant API as /chat
+  actor U as You (via your assistant)
+  participant API as ask_tender (MCP tool)
   participant F as "ensure it's loaded"
   participant E as fastembed (in-process)
   participant PG as pgvector
-  participant G as Groq (answer)
+  participant LC as LangChain
+  participant G as Llama 4 (answer)
   U->>API: source + tender_id + question
   API->>F: is this tender loaded?
   alt not loaded yet (local only)
@@ -172,8 +180,10 @@ sequenceDiagram
   E-->>API: question vector
   API->>PG: find the closest chunks
   PG-->>API: top 8 chunks (+ document + page)
-  API->>G: tender facts + chunks + question
-  G-->>API: written answer
+  API->>LC: tender facts + chunks + question
+  LC->>G: chat request (with retries + fallback)
+  G-->>LC: written answer
+  LC-->>API: written answer
   API-->>U: answer + references (document, page)
 ```
 
@@ -181,8 +191,9 @@ sequenceDiagram
 1. Check the tender is loaded (if not, fetch it first — local only, see section 5).
 2. Turn your question into numbers (fastembed, in-process — takes milliseconds).
 3. Ask pgvector for the **8 chunks** closest in meaning.
-4. Send the tender's basic facts + those chunks + your question to Groq.
-5. Groq writes a short answer that only uses what it was given, formats it nicely,
+4. Send the tender's basic facts + those chunks + your question to **Llama 4**
+   through **LangChain**.
+5. Llama 4 writes a short answer that only uses what it was given, formats it nicely,
    and cites the document + page. You get it back.
 
 ---
@@ -250,7 +261,7 @@ useful to search in them.
 
 ## 9. How the AI is told to answer (the prompt)
 
-Before Groq writes an answer, it's given strict instructions:
+Before Llama 4 writes an answer, it's given strict instructions:
 - Use **only** the tender facts and chunks provided — no outside knowledge.
 - **Cite** the document and page for each fact.
 - If the answer isn't in the provided text, **say "not available"** — don't guess.
@@ -275,18 +286,19 @@ so the storage could be swapped later without touching the rest.
 
 ---
 
-## 11. Why it's fast (~0.5 seconds)
+## 11. Why it's quick (a few seconds)
 
-The whole pipeline is quick because none of it is heavy:
+The retrieval half is near-instant; the answer time is the cloud LLM call:
 - **Making the question's numbers** happens **inside the app** (fastembed, a small
   ONNX model). The model loads once when the app starts (a few seconds, one time),
   then each question embeds in **~10–50 milliseconds**.
 - **The pgvector search** over the HNSW index takes a few milliseconds.
-- **Groq** writes the answer in **~0.3–1 second**.
+- **Llama 4** (via OpenRouter) writes the answer in **~1–3 seconds**.
 
-So after the one-time startup, a question is about **half a second**. If Groq is
-ever busy or rate-limited, the app automatically drops to a **smaller Groq model**,
-and only as a last resort to a **local model** (slower) — so it never just fails.
+So after the one-time startup, a question takes **a few seconds**, dominated by the
+Llama 4 call. If a model is busy or rate-limited, **LangChain** retries, then the
+app moves to the next model in the chain (**Llama 4 Scout → Groq `gpt-oss` backup →
+optional local**) — so it never just fails.
 
 ---
 
@@ -295,29 +307,37 @@ and only as a last resort to a **local model** (slower) — so it never just fai
 The app fails **safely and clearly**, never with a made-up answer:
 - Tender not found and can't be fetched → a clear message telling you what to do.
 - The tender exists nowhere / has closed → "it may have closed", not a guess.
-- Groq busy or rate-limited → auto-retry, then a smaller model, then a local model.
+- A chat model busy or rate-limited → LangChain auto-retries, then the app moves to
+  the next model in the chain (Llama 4 Scout → Groq `gpt-oss` backup → optional local).
 - No relevant chunks found → "I couldn't find relevant content", not invention.
-- `/health` shows the status of the database, pgvector, the embedding model, and
-  the chat provider at a glance.
+- `health_check` shows the status of the database, pgvector, the embedding model,
+  and the chat provider at a glance.
+
+Every failure surfaces as an **MCP tool error** carrying a readable message, so the
+calling assistant can explain it or retry with different arguments — the same
+mapping the old HTTP layer did with status codes.
 
 ---
 
-## 13. Running it in the cloud (for free)
+## 13. Sharing one corpus across machines
 
-The same app runs on a free host with two settings changes: embeddings already run
-in-process (so no GPU or extra service is needed), and scraping is turned off.
+An stdio MCP server has no port and no URL — it runs on whichever machine its
+assistant runs on, so there is nothing to host. What you share instead is the
+**database**, so every machine answers from the same tenders.
 
 ```mermaid
 flowchart LR
-  U[Anyone with the link] --> R[Render<br/>FastAPI + in-process embeddings]
-  R --> N[(Neon<br/>managed Postgres + pgvector)]
-  R --> G[Groq API<br/>writes the answer]
+  A[Your PC<br/>assistant + MCP server] --> N[(Neon<br/>managed Postgres + pgvector)]
+  B[Colleague's PC<br/>assistant + MCP server] --> N
+  A --> G[Llama 4 via LangChain<br/>OpenRouter - writes the answer]
+  B --> G
 ```
 
-- **App** → a free Render web service (Docker image with the model baked in).
-- **Database** → a free Neon Postgres with pgvector.
-- **Answers** → Groq's free tier.
-- **Data** is loaded once from your PC into Neon; the cloud app is **query-only**.
+- **Server** → local on each machine, launched by that machine's assistant.
+- **Database** → one free Neon Postgres with pgvector, shared.
+- **Answers** → **Llama 4** on an OpenRouter free key (called via LangChain).
+- **Data** is loaded once from the PC that has the scrapers; machines without them
+  set `ENABLE_SCRAPING=false` and are **query-only**.
 
 See **[../DEPLOY.md](../DEPLOY.md)** for the full step-by-step.
 
@@ -338,11 +358,13 @@ settings change — not a rewrite.
    (this installs **fastembed**, the in-process embedding model — nothing else to
    run for embeddings).
 4. **Settings:** copy `.env.example` to `.env`; set `POSTGRES_PASSWORD`,
-   `EMBED_PROVIDER=fastembed`, and a free `GROQ_API_KEY` (from
-   https://console.groq.com).
+   `EMBED_PROVIDER=fastembed`, and a free `LLAMA_API_KEY` (from
+   https://openrouter.ai — chat = Llama 4). Optionally add `GROQ_API_KEY` for a
+   backup model.
 5. **Create the tables:** `scripts/setup_db.ps1`.
-6. **Load tenders:** `scripts/ingest_all.py`, then run `uvicorn app.main:app` and
-   open http://localhost:8000/.
+6. **Load tenders:** `scripts/ingest_all.py`.
+7. **Connect the server** to your assistant (`claude mcp add …`, or Claude
+   Desktop's `claude_desktop_config.json`) — see [../DEPLOY.md](../DEPLOY.md).
 
-*(Optional: install Ollama and `ollama pull llama3.2:3b` only if you want an offline
-chat fallback. It is not used for embeddings.)*
+*(Optional: install Ollama, pull a small chat model, and set `CHAT_MODEL` in `.env`
+only if you want an offline chat fallback. It is not used for embeddings.)*
