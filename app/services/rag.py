@@ -92,9 +92,10 @@ _SUMMARY_BUDGET = 20     # cap on the union, to keep the prompt affordable
 
 def summarize(db: Session, tender: Tender) -> ChatResponse:
     """Grounded brief of ONE tender: what it is, dates, fees, eligibility, docs..."""
-    # 12 aspects x a full-width rerank pool was ~48s of cross-encoder work for 36
-    # kept chunks. The aspect queries are short and single-concept by design, so
-    # hybrid retrieval already ranks them well and a narrow pool loses little.
+    # 12 aspects x a full-width rerank pool was ~60s of cross-encoder work to keep
+    # 3 hits each. Narrowing the pool is the lever, but it is NOT free: measured
+    # aspect coverage runs 47% with no reranking, 58% at pool 6, 67% at pool 24.
+    # See summary_rerank_candidates in config for the full curve.
     per_aspect = [_retrieve(db, aspect, _PER_ASPECT, tender_pk=tender.id,
                             pool_size=settings.summary_rerank_candidates)
                   for aspect in _SUMMARY_ASPECTS]

@@ -119,10 +119,17 @@ class Settings(BaseSettings):
     # Reranking costs ~170ms PER CANDIDATE and scales linearly (measured), so this
     # number is the single biggest latency knob. 12 keeps a 1.5x pool over top_k.
     rerank_candidates: int = 12
-    # The summary asks 12 short single-concept queries and keeps only 3 hits from
-    # each, so reranking a wide pool there is mostly wasted work multiplied by 12.
-    # A tighter pool turns ~48s of reranking into ~12s.
-    summary_rerank_candidates: int = 6
+    # The summary runs 12 aspect queries, so its pool is multiplied by 12 and gets
+    # its own knob. Measured recall vs cost (3 tenders x 12 aspects, per summary):
+    #   no rerank  47% covered   0.9s
+    #   pool  6    58% covered  14.1s
+    #   pool 12    61% covered  33.2s   <- chosen
+    #   pool 24    67% covered  64.5s   (the original)
+    # Reranking clearly earns its keep (+11pts over none), and the pool matters,
+    # so this is a real accuracy/latency dial rather than free savings. 12 halves
+    # the wait while giving back most of what a pool of 6 dropped. Raise it toward
+    # 24 if a brief starts reporting "Not stated" for facts that are in the docs.
+    summary_rerank_candidates: int = 12
 
     # Order the chat providers are tried in ("llama,groq" or "groq,llama").
     #
