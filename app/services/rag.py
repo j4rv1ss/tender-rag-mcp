@@ -87,7 +87,14 @@ _SUMMARY_ASPECTS = (
     "contact person enquiries",
 )
 _PER_ASPECT = 3          # chunks pulled per aspect before de-duplication
-_SUMMARY_BUDGET = 20     # cap on the union, to keep the prompt affordable
+# Cap on the union. This is a HARD provider constraint, not just a cost knob:
+# at 20 chunks the prompt reached 8,045 tokens and Groq rejected it outright
+# (413, "tokens per minute (TPM): Limit 8000, Requested 8480"), so the backup
+# provider could never serve a summary — exactly when the primary is failing.
+# That budget covers input AND the answer, so the prompt must leave room for the
+# reasoning tokens gpt-oss spends before writing: 12 chunks is ~5.3k tokens, plus
+# groq_max_tokens=1500, ~6.8k total.
+_SUMMARY_BUDGET = 12
 
 
 def summarize(db: Session, tender: Tender) -> ChatResponse:

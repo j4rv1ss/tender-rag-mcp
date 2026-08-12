@@ -144,6 +144,30 @@ class Settings(BaseSettings):
     # difference between endpoints as noise unless you have many samples.
     chat_provider_order: str = "llama,groq"
 
+    # How long to wait on one endpoint before abandoning it for the next.
+    #
+    # Measured on an identical prompt, 6 runs per endpoint: every endpoint has a
+    # median of 1.3-1.8s, but Groq stalled past 18s on 2 of 6 calls. Those stalls
+    # are NOT correlated across providers, so a stalled call is worth abandoning
+    # early — the next endpoint answers in ~1.5s. 12s is ~3x the slowest healthy
+    # response seen (4.0s), so it cuts the tail without killing valid slow calls.
+    #
+    # Retries are 0 deliberately: retrying the endpoint that just stalled doubles
+    # the wait before failover, and there are three more endpoints behind it.
+    llm_timeout: float = 12.0
+    llm_max_retries: int = 0
+
+    # Answer length budget. Groq's gpt-oss models are REASONING models: they spend
+    # this budget thinking before writing. At 600 a summary came back with
+    # finish_reason='length' and output_tokens=600 of which 598 were reasoning —
+    # i.e. an EMPTY answer that looked like success. They need room for both.
+    # Careful: Groq's free TPM budget of 8000 counts input + max_tokens TOGETHER,
+    # so raising this is not free — at 2500 a 6.2k-token summary was rejected 413
+    # ("Requested 8686"). 1500 leaves reasoning room while staying inside the cap
+    # for the summary prompt (~5.3k tokens at _SUMMARY_BUDGET=12).
+    chat_max_tokens: int = 600      # Llama 4 — plain completion, 600 is plenty
+    groq_max_tokens: int = 1500     # gpt-oss — reasoning tokens come out of this
+
     @property
     def chat_endpoints(self) -> list[dict]:
         """OpenAI-compatible chat endpoints to try in order. Each entry carries its
@@ -152,22 +176,25 @@ class Settings(BaseSettings):
         eps: list[dict] = []
         seen: set[tuple[str, str]] = set()
 
-        def add(provider: str, url: str, key: str, model: str) -> None:
+        def add(provider: str, url: str, key: str, model: str,
+                max_tokens: int) -> None:
             model = model.strip()
             if model and (provider, model) not in seen:
                 seen.add((provider, model))
                 eps.append({"provider": provider, "url": url, "key": key,
-                            "model": model})
+                            "model": model, "max_tokens": max_tokens})
 
         def llama() -> None:
             if self.llama_api_key.strip():
                 for m in [self.llama_model, *self.llama_fallback_models.split(",")]:
-                    add("llama", self.llama_api_url, self.llama_api_key, m)
+                    add("llama", self.llama_api_url, self.llama_api_key, m,
+                        self.chat_max_tokens)
 
         def groq() -> None:
             if self.groq_api_key.strip():
                 for m in self.groq_fallback_models.split(","):
-                    add("groq", self.groq_url, self.groq_api_key, m)
+                    add("groq", self.groq_url, self.groq_api_key, m,
+                        self.groq_max_tokens)
 
         builders = {"llama": llama, "groq": groq}
         for name in self.chat_provider_order.split(","):

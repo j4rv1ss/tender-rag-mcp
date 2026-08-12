@@ -33,13 +33,10 @@ class LLMUnavailable(LLMError):
 # httpx connection warm (lower, more consistent latency) across questions.
 _MODELS: dict[str, ChatOpenAI] = {}
 
-# The openai client retries a rate-limited request this many times (with backoff,
-# honouring Retry-After) before we give up on the endpoint and fall to the next one.
-# Kept low deliberately: with four endpoints, moving to the next provider beats
-# waiting out a backoff on this one. At 2 retries x 4 endpoints x a 60s timeout the
-# worst case was 12 attempts, which is what produced the observed ~28s outliers.
-_MAX_RETRIES = 1
-_TIMEOUT = 25.0
+# Fail over fast rather than wait out a stall — see llm_timeout in config for the
+# measurements behind these. Overridable via LLM_TIMEOUT / LLM_MAX_RETRIES.
+_MAX_RETRIES = settings.llm_max_retries
+_TIMEOUT = settings.llm_timeout
 
 
 def _model_for(endpoint: dict, temperature: float) -> ChatOpenAI:
@@ -51,7 +48,8 @@ def _model_for(endpoint: dict, temperature: float) -> ChatOpenAI:
             base_url=endpoint["url"],
             api_key=endpoint["key"],
             temperature=temperature,   # 0 = deterministic, best for factual QA
-            max_tokens=600,            # plenty for the structured answer; saves budget
+            # Per-endpoint: reasoning models burn this budget before they write.
+            max_tokens=endpoint.get("max_tokens", 600),
             timeout=_TIMEOUT,
             max_retries=_MAX_RETRIES,
         )
@@ -106,7 +104,18 @@ def _chat_endpoint(system: str, user: str, temperature: float, endpoint: dict) -
     if isinstance(text, list):   # some providers return content parts
         text = "".join(part.get("text", "") if isinstance(part, dict) else str(part)
                        for part in text)
-    return (text or "").strip()
+    text = (text or "").strip()
+    if not text:
+        # An empty answer is a failure, not an answer. A reasoning model that
+        # spends its whole token budget thinking returns "" with a 200 OK, and
+        # without this the caller would render a blank brief instead of failing
+        # over to an endpoint that can actually answer.
+        reason = (reply.response_metadata or {}).get("finish_reason", "unknown")
+        raise LLMUnavailable(
+            f"{endpoint['provider']} returned an empty answer for "
+            f"{endpoint['model']} (finish_reason={reason}); "
+            "raise max_tokens for this endpoint if it is a reasoning model")
+    return text
 
 
 # --- Ollama (optional local, offline fallback) ------------------------------
