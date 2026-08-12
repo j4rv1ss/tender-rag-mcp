@@ -16,13 +16,18 @@ from app.services.embeddings import embed_query
 from app.services.retriever import RetrievedChunk, retriever
 
 
-def _retrieve(db: Session, question: str, k: int,
-              tender_pk: int | None) -> list[RetrievedChunk]:
-    """Hybrid retrieval, then (optionally) cross-encoder rerank down to k."""
+def _retrieve(db: Session, question: str, k: int, tender_pk: int | None,
+              pool_size: int | None = None) -> list[RetrievedChunk]:
+    """Hybrid retrieval, then (optionally) cross-encoder rerank down to k.
+
+    pool_size overrides how many candidates reach the reranker. That matters:
+    reranking is linear at ~170ms per candidate, so the pool — not the model —
+    sets the latency. Callers that run _retrieve in a loop should pass a small one.
+    """
     qvec = embed_query(question)
     if settings.use_reranker:
         pool = retriever.retrieve(db, qvec, question,
-                                  settings.rerank_candidates, tender_pk)
+                                  pool_size or settings.rerank_candidates, tender_pk)
         return reranker.rerank(question, pool, k)
     return retriever.retrieve(db, qvec, question, k, tender_pk)
 
@@ -87,7 +92,11 @@ _SUMMARY_BUDGET = 20     # cap on the union, to keep the prompt affordable
 
 def summarize(db: Session, tender: Tender) -> ChatResponse:
     """Grounded brief of ONE tender: what it is, dates, fees, eligibility, docs..."""
-    per_aspect = [_retrieve(db, aspect, _PER_ASPECT, tender_pk=tender.id)
+    # 12 aspects x a full-width rerank pool was ~48s of cross-encoder work for 36
+    # kept chunks. The aspect queries are short and single-concept by design, so
+    # hybrid retrieval already ranks them well and a narrow pool loses little.
+    per_aspect = [_retrieve(db, aspect, _PER_ASPECT, tender_pk=tender.id,
+                            pool_size=settings.summary_rerank_candidates)
                   for aspect in _SUMMARY_ASPECTS]
     # Round-robin by rank, not by aspect: every aspect contributes its #1 hit before
     # any aspect contributes its #2, so no heading can be crowded out by another.

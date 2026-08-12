@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     llama_api_url: str = "https://openrouter.ai/api/v1"
     llama_model: str = "meta-llama/llama-4-maverick"
     # Fallback Llama models (comma-list), tried when the primary is rate-limited.
+    # Scout may be the better primary — over 3 runs on real prompts it held
+    # 2.6-3.9s while Maverick ranged 3.2s to 64s — but 3 runs is too thin to
+    # justify the swap, and free-tier queueing moves far more than model choice.
+    # Swap LLAMA_MODEL/LLAMA_FALLBACK_MODELS if you want to try it.
     llama_fallback_models: str = "meta-llama/llama-4-scout"
 
     # SECONDARY (optional): Groq — a cross-provider safety net using NON-Llama
@@ -66,7 +70,9 @@ class Settings(BaseSettings):
     # answers if the Llama API is rate-limited. Leave GROQ_API_KEY blank to skip.
     groq_api_key: str = ""
     groq_url: str = "https://api.groq.com/openai/v1"
-    groq_fallback_models: str = "openai/gpt-oss-120b,openai/gpt-oss-20b"
+    # 20b before 120b: on real prompts the small model stayed ~1.3s while 120b
+    # ranged 6-36s, so the larger model is the worse backup as well as the slower one.
+    groq_fallback_models: str = "openai/gpt-oss-20b,openai/gpt-oss-120b"
 
     # --- MCP transport ------------------------------------------------------
     # stdio (default) needs none of this: the client owns the process, so it is
@@ -110,13 +116,32 @@ class Settings(BaseSettings):
     # cloud sets USE_RERANKER=false to stay within its small RAM.
     use_reranker: bool = True
     reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
-    rerank_candidates: int = 24     # fused hits pulled, then reranked down to top_k
+    # Reranking costs ~170ms PER CANDIDATE and scales linearly (measured), so this
+    # number is the single biggest latency knob. 12 keeps a 1.5x pool over top_k.
+    rerank_candidates: int = 12
+    # The summary asks 12 short single-concept queries and keeps only 3 hits from
+    # each, so reranking a wide pool there is mostly wasted work multiplied by 12.
+    # A tighter pool turns ~48s of reranking into ~12s.
+    summary_rerank_candidates: int = 6
+
+    # Order the chat providers are tried in ("llama,groq" or "groq,llama").
+    #
+    # If you retune this, MEASURE WITH A REAL PROMPT. On a one-line prompt Groq
+    # looks 2-5x faster than Llama; on the ~4k tokens a grounded answer actually
+    # sends, that reverses. Measured here at 15KB of prompt, 3 runs each:
+    #   llama-4-scout    2.6 / 2.8 / 3.9 s
+    #   llama-4-maverick 3.2 / 3.7 / 64.3 s
+    #   groq gpt-oss-20b 1.3 s, then rate-limited
+    #   groq gpt-oss-120b 6.2 / 15.0 / 36.5 s
+    # Free-tier queueing swings the same call from 3s to 66s, so treat any small
+    # difference between endpoints as noise unless you have many samples.
+    chat_provider_order: str = "llama,groq"
 
     @property
     def chat_endpoints(self) -> list[dict]:
-        """OpenAI-compatible chat endpoints to try in order: the Llama API first
-        (Llama 4), then Groq's non-Llama backup models. Each entry carries its own
-        base URL + key + model, so one chat() loop can span both providers."""
+        """OpenAI-compatible chat endpoints to try in order. Each entry carries its
+        own base URL + key + model, so one chat() loop can span both providers.
+        Order follows chat_provider_order; within a provider, its own model order."""
         eps: list[dict] = []
         seen: set[tuple[str, str]] = set()
 
@@ -127,12 +152,25 @@ class Settings(BaseSettings):
                 eps.append({"provider": provider, "url": url, "key": key,
                             "model": model})
 
-        if self.llama_api_key.strip():
-            for m in [self.llama_model, *self.llama_fallback_models.split(",")]:
-                add("llama", self.llama_api_url, self.llama_api_key, m)
-        if self.groq_api_key.strip():
-            for m in self.groq_fallback_models.split(","):
-                add("groq", self.groq_url, self.groq_api_key, m)
+        def llama() -> None:
+            if self.llama_api_key.strip():
+                for m in [self.llama_model, *self.llama_fallback_models.split(",")]:
+                    add("llama", self.llama_api_url, self.llama_api_key, m)
+
+        def groq() -> None:
+            if self.groq_api_key.strip():
+                for m in self.groq_fallback_models.split(","):
+                    add("groq", self.groq_url, self.groq_api_key, m)
+
+        builders = {"llama": llama, "groq": groq}
+        for name in self.chat_provider_order.split(","):
+            build = builders.get(name.strip().lower())
+            if build:
+                build()
+        # Anything omitted from the order still belongs at the end: a configured
+        # key should never be silently unusable because of a typo in the order.
+        for build in builders.values():
+            build()
         return eps
 
     @property

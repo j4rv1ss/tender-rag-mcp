@@ -35,8 +35,11 @@ _MODELS: dict[str, ChatOpenAI] = {}
 
 # The openai client retries a rate-limited request this many times (with backoff,
 # honouring Retry-After) before we give up on the endpoint and fall to the next one.
-_MAX_RETRIES = 2
-_TIMEOUT = 60.0
+# Kept low deliberately: with four endpoints, moving to the next provider beats
+# waiting out a backoff on this one. At 2 retries x 4 endpoints x a 60s timeout the
+# worst case was 12 attempts, which is what produced the observed ~28s outliers.
+_MAX_RETRIES = 1
+_TIMEOUT = 25.0
 
 
 def _model_for(endpoint: dict, temperature: float) -> ChatOpenAI:
