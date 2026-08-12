@@ -1,9 +1,10 @@
 # Tender RAG POC — Python 3.12
 # MCP server: stdio for local AI clients, streamable HTTP for hosting. In --http
-# mode the same process also serves the browser chat page and a small JSON API,
-# built on the Starlette + uvicorn that mcp already depends on — replacing the
-# old FastAPI stack without adding a dependency back.
+# mode the same process also serves the browser chat page and the REST API.
 mcp==2.*
+# REST layer mounted at /api (routers + Swagger at /api/docs). Must stay
+# unpinned-ish: 0.115 required starlette<0.47, which mcp 2.x contradicts.
+fastapi>=0.141
 sqlalchemy==2.0.*
 psycopg[binary]==3.2.*
 pgvector==0.3.*

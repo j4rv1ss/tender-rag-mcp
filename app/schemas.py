@@ -80,3 +80,23 @@ class IngestAllResponse(BaseModel):
     totals: dict
     ingested: list[dict]
     skipped: list[str]
+
+
+class TenderRow(BaseModel):
+    """One row of GET /tenders — just enough to pick a tender in the UI.
+
+    Deliberately leaner than TenderOut: the list can be long, and the page only
+    needs to identify a tender, not describe it.
+    """
+    source: str
+    tender_id: str
+    tender_number: str | None = None
+    title: str | None = None
+
+
+class IngestResult(BaseModel):
+    """What POST /ingest reports back once a tender is indexed."""
+    source: str
+    tender_id: str
+    documents: int
+    chunks: int

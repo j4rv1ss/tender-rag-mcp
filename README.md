@@ -98,6 +98,21 @@ demos and for anyone without an MCP client. It calls the same RAG pipeline throu
 `POST /api/chat`; the assistant is the richer interface, the page is the zero-install
 one.
 
+That REST side is a **FastAPI app mounted at `/api`**, so it comes with request
+validation and interactive docs at **`/api/docs`**:
+
+| Method | Path | What it does |
+|---|---|---|
+| POST | `/api/chat` | ask about one tender, or all of them if `tender_id` is blank |
+| POST | `/api/summary` | grounded brief of one tender |
+| POST | `/api/ingest` | index a tender (scrapes first if enabled) |
+| GET | `/api/tenders` | what is loaded |
+| GET | `/api/health` | same probe as the `health_check` tool |
+
+One process serves all of it — page at `/`, REST at `/api/*`, MCP at `/mcp` —
+over the same [app/services/](app/services/), so the two front doors cannot
+answer differently.
+
 **Why is the "meaning numbers" part built into the app?**
 Making embeddings in-process (with a small model called `bge-small`, 384 numbers
 each) means there is **no extra service to run, no API key, and no daily limit** —

@@ -461,42 +461,16 @@ class BearerAuth:
         await self.app(scope, receive, send)
 
 
-class _HttpError(Exception):
-    """A domain failure with the HTTP status the browser chat should see."""
-
-    def __init__(self, status: int, detail: str):
-        super().__init__(detail)
-        self.status, self.detail = status, detail
-
-
-@contextmanager
-def _web_db() -> Iterator[Session]:
-    """Session per web request. The HTTP sibling of _db(): same domain errors, but
-    mapped to status codes instead of ToolError (the chat page is not an MCP client).
-    """
-    db = SessionLocal()
-    try:
-        yield db
-    except EmbeddingError as e:
-        raise _HttpError(503, f"embedding backend unavailable: {e}") from e
-    except LLMError as e:
-        raise _HttpError(503, f"chat model unavailable: {e}") from e
-    except ScrapeError as e:
-        raise _HttpError(502, f"scrape failed: {e}") from e
-    except normalize.TenderNotFound as e:
-        raise _HttpError(404, str(e)) from e
-    finally:
-        db.close()
-
-
 def _http_app(path: str, stateless: bool):
-    """Build the ASGI app: MCP endpoint, the browser chat page, and /healthz."""
-    from starlette.concurrency import run_in_threadpool
+    """Build the ASGI app: MCP at /mcp, the chat page at /, the REST API at /api."""
     from starlette.requests import Request
     from starlette.responses import FileResponse, JSONResponse
-    from starlette.routing import Route
+    from starlette.routing import Mount, Route
 
     from mcp.server.transport_security import TransportSecuritySettings
+
+    # Imported lazily so the stdio path never pays for FastAPI.
+    from app import web
 
     token = settings.mcp_auth_token.strip()
     _page = Path(__file__).resolve().parent / "static" / "index.html"
@@ -509,75 +483,6 @@ def _http_app(path: str, stateless: bool):
     async def home(request: Request) -> FileResponse:
         return FileResponse(str(_page))
 
-    def health_route(request: Request) -> JSONResponse:
-        # Same probe the health_check tool reports, so the two can't disagree.
-        return JSONResponse(health.check())
-
-    # The DB/RAG work below is blocking (a question costs ~5s: embed -> retrieve ->
-    # LLM), so it must never run on the event loop that also serves the MCP stream.
-    # Starlette threadpools plain `def` endpoints; `chat` needs `await request.json()`
-    # first, so it hands the blocking half off explicitly.
-    def tenders(request: Request) -> JSONResponse:
-        with _web_db() as db:
-            rows = db.execute(select(Tender).order_by(Tender.source,
-                                                      Tender.tender_id)).scalars()
-            return JSONResponse([
-                {"source": t.source, "tender_id": t.tender_id,
-                 "tender_number": t.tender_number, "title": t.title} for t in rows])
-
-    async def chat(request: Request) -> JSONResponse:
-        body = await request.json()
-        return await run_in_threadpool(_chat_sync, body)
-
-    async def summary(request: Request) -> JSONResponse:
-        # Same path as chat, with the whole-tender brief flag forced on.
-        body = await request.json()
-        return await run_in_threadpool(_chat_sync, {**body, "summary": True})
-
-    async def ingest(request: Request) -> JSONResponse:
-        body = await request.json()
-        return await run_in_threadpool(_ingest_sync, body)
-
-    def _ingest_sync(body: dict) -> JSONResponse:
-        tender_id = (body.get("tender_id") or "").strip()
-        if not tender_id:
-            return JSONResponse({"detail": "tender_id is required"}, status_code=422)
-        source = (body.get("source") or "").strip() or "etenders"
-        with _web_db() as db:
-            # Mirrors the ingest_tender tool: load from disk, scraping only if the
-            # server is configured for it (cloud hosts have no scraper binaries).
-            tender = ingest_service.ensure_tender(
-                db, source, tender_id, allow_scrape=settings.enable_scraping)
-            if tender is None:
-                raise _HttpError(
-                    404, f"{source}/{tender_id} is not on disk and could not be "
-                         "fetched (scraping disabled or source unsupported)")
-            docs = db.execute(select(func.count(Document.id))
-                              .where(Document.tender_pk == tender.id)).scalar()
-            chunks = db.execute(select(func.count(Chunk.id))
-                                .where(Chunk.tender_pk == tender.id)).scalar()
-        return JSONResponse({"source": tender.source, "tender_id": tender.tender_id,
-                             "documents": docs, "chunks": chunks})
-
-    def _chat_sync(body: dict) -> JSONResponse:
-        question = (body.get("question") or "").strip()
-        tender_id = (body.get("tender_id") or "").strip()
-        want_summary = bool(body.get("summary"))
-        if not question and not want_summary:
-            return JSONResponse({"detail": "question is empty"}, status_code=422)
-        with _web_db() as db:
-            if tender_id:
-                source = (body.get("source") or "").strip() or "etenders"
-                tender = ingest_service.ensure_tender(
-                    db, source, tender_id, allow_scrape=settings.enable_scraping)
-                if tender is None:
-                    raise _HttpError(404, f"tender {source}/{tender_id} is not loaded")
-                res = (rag.summarize(db, tender) if want_summary else
-                       rag.answer_question(db, tender, question, body.get("top_k")))
-            else:
-                res = rag.answer_across_corpus(db, question, body.get("top_k"))
-        return JSONResponse(res.model_dump())
-
     app = mcp.streamable_http_app(
         streamable_http_path=path,
         stateless_http=stateless,
@@ -585,18 +490,15 @@ def _http_app(path: str, stateless: bool):
             allowed_hosts=settings.allowed_hosts,
             allowed_origins=settings.allowed_hosts),
     )
-    async def on_http_error(request: Request, exc: _HttpError) -> JSONResponse:
-        return JSONResponse({"detail": exc.detail}, status_code=exc.status)
-
-    app.add_exception_handler(_HttpError, on_http_error)
+    # The REST surface is a whole FastAPI app mounted here, so it brings its own
+    # validation, error handling and Swagger (/api/docs) without this module
+    # knowing anything about them. Its routes are plain `def`, which FastAPI runs
+    # in a threadpool — a question costs seconds and must not block the event
+    # loop that is also serving the MCP stream from this same process.
     app.router.routes += [
         Route("/healthz", healthz, methods=["GET"]),
         Route("/", home, methods=["GET"]),
-        Route("/api/tenders", tenders, methods=["GET"]),
-        Route("/api/chat", chat, methods=["POST"]),
-        Route("/api/summary", summary, methods=["POST"]),
-        Route("/api/ingest", ingest, methods=["POST"]),
-        Route("/api/health", health_route, methods=["GET"]),
+        Mount("/api", app=web.api),
     ]
     if not token:
         # Open endpoint: anyone who knows the URL can call every tool, including
