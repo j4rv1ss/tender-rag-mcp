@@ -103,6 +103,20 @@ class Settings(BaseSettings):
                      f"localhost:{self.mcp_port}", f"127.0.0.1:{self.mcp_port}"]
         return hosts
 
+    # --- Agent layer -------------------------------------------------------
+    # When true, /api/chat goes User -> FastAPI -> agent -> MCP client -> MCP
+    # server -> RAG, so the browser reaches the corpus through the same tools an
+    # AI assistant uses and the MODEL picks which tool fits the question.
+    # Costs one extra model round-trip per question (choose, then answer), so
+    # latency and token spend roughly double. Set false to call rag.py directly.
+    agent_mode: bool = True
+    # How many choose->call cycles before giving up and returning the last tool
+    # output. 3 allows list_tenders -> ask_tender -> answer.
+    agent_max_turns: int = 3
+    # Offer only tools the server marks readOnlyHint. Leave false: a web visitor
+    # should be able to ask anything and trigger nothing expensive.
+    agent_allow_writes: bool = False
+
     # RAG params
     chunk_tokens: int = 500
     chunk_overlap: int = 80

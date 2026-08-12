@@ -139,8 +139,8 @@ async def _lifespan(server: MCPServer) -> AsyncIterator[None]:
     # client-side startup timeout.
     def _warm() -> None:
         try:
-            health.warmup()
-            log.info("embedding + reranker + chat warmed up")
+            if health.warmup():
+                log.info("embedding + reranker + chat warmed up")
         except Exception as e:  # noqa: BLE001 - non-fatal
             log.warning("warmup skipped: %s", e)
 

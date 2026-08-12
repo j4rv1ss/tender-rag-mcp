@@ -102,15 +102,32 @@ def check() -> dict:
     return report
 
 
-def warmup() -> None:
+_WARMED = False
+
+
+def warmup() -> bool:
     """Load the embedding/reranker models and prime the LLM connection.
 
+    Returns True if it actually warmed anything, False if a previous call
+    already did — so callers can log honestly instead of claiming work.
+
     A cold embed connection costs ~2.5s on its first real query; paying that
-    up front keeps the first tool call fast. Non-fatal — raises nothing.
+    up front keeps the first tool call fast.
+
+    Idempotent per process, and that matters: the agent layer opens an
+    in-process MCP session per tool call, each of which runs the server
+    lifespan. Without this guard every tool call would spend a real LLM request
+    just saying hello — burning quota and adding a round-trip to each answer.
     """
+    global _WARMED
+    if _WARMED:
+        return False
+    _WARMED = True
+
     from app.services import llm, reranker
     from app.services.embeddings import embed_query
 
     embed_query("warmup")
     reranker.warmup()                                  # load reranker model (if on)
     llm.chat("You are a warmup.", "Reply with OK.")    # prime the LLM connection
+    return True

@@ -83,6 +83,32 @@ def chat(system: str, user: str, temperature: float = 0.0) -> str:
     return _chat_ollama(system, user, temperature)
 
 
+def chat_tools(messages: list, tools: list[dict], temperature: float = 0.0):
+    """Like chat(), but the model may answer with tool calls instead of prose.
+
+    Walks the same endpoint chain with the same failover rules, and returns the
+    raw AIMessage so the caller can inspect .tool_calls. Note the empty-content
+    guard from _chat_endpoint deliberately does NOT apply here: a reply that is
+    only tool calls has empty content and is perfectly valid.
+    """
+    endpoints = settings.chat_endpoints
+    if not endpoints:
+        raise LLMError("tool calling needs a cloud endpoint; no API key is configured")
+    last: Exception | None = None
+    for ep in endpoints:
+        try:
+            model = _model_for(ep, temperature).bind_tools(tools)
+            reply = model.invoke(messages)
+        except Exception as e:  # noqa: BLE001 - classify, then try the next endpoint
+            last = e
+            continue
+        if reply.tool_calls or (reply.content or "").strip():
+            return reply
+        # Neither prose nor a tool call: same empty-answer failure mode chat() guards.
+        last = LLMUnavailable(f"{ep['provider']} returned an empty reply for {ep['model']}")
+    raise LLMError(f"every chat endpoint failed during tool calling (last: {last})")
+
+
 def _chat_endpoint(system: str, user: str, temperature: float, endpoint: dict) -> str:
     """Invoke one OpenAI-compatible endpoint (Llama API or Groq) via LangChain."""
     llm = _model_for(endpoint, temperature)

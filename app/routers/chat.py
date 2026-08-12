@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.db import get_db
 from app.models import Tender
 from app.schemas import ChatRequest, ChatResponse, SummaryRequest
-from app.services import ingest_service, rag
+from app.services import agent, ingest_service, rag
+from app.services.llm import LLMError
 
 router = APIRouter(tags=["chat"])
 
@@ -36,20 +38,41 @@ def _resolve(db: Session, source: str | None, tender_id: str) -> Tender:
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
+async def chat(req: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     """Answer a question about one tender, or across the whole corpus.
 
     Omit (or blank) `tender_id` to search every loaded tender.
+
+    With AGENT_MODE on (the default) this does not call the RAG engine directly:
+    it hands the question to the agent, which discovers the MCP tools, picks one
+    and invokes it over the protocol. The browser therefore reaches the corpus
+    through exactly the interface an AI assistant uses.
     """
     question = (req.question or "").strip()
     if not question:
         raise HTTPException(status_code=422, detail="question is empty")
 
     tender_id = (req.tender_id or "").strip()
+
+    if settings.agent_mode:
+        try:
+            result = await agent.answer(question, req.source, tender_id or None)
+        except LLMError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=f"agent failed: {e}") from e
+        # The agent's prose already carries the tool's Sources line, so the
+        # structured references list stays empty rather than being reconstructed.
+        return ChatResponse(
+            mode="agent", tender_id=tender_id or None, question=question,
+            answer=result.answer, references=[],
+            chunks_used=len(result.tool_calls))
+
+    # Direct path: AGENT_MODE=false, or the MCP session isn't up.
     if not tender_id:
-        return rag.answer_across_corpus(db, question, req.top_k)
-    return rag.answer_question(db, _resolve(db, req.source, tender_id),
-                               question, req.top_k)
+        return await run_in_threadpool(rag.answer_across_corpus, db, question, req.top_k)
+    tender = await run_in_threadpool(_resolve, db, req.source, tender_id)
+    return await run_in_threadpool(rag.answer_question, db, tender, question, req.top_k)
 
 
 @router.post("/summary", response_model=ChatResponse)
